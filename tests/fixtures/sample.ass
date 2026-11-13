@@ -1,0 +1,35 @@
+[Script Info]
+Title: senpaidub test fixture
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,40,1
+Style: Main,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,40,1
+Style: Italics,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,1,0,0,100,100,0,0,1,2,1,2,10,10,40,1
+Style: Top,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,8,10,10,40,1
+Style: Signs,Arial,50,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,8,10,10,40,1
+Style: OP_Romaji,Arial,50,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,8,10,10,40,1
+Style: ED-Eng,Arial,50,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,40,1
+Style: TLNote,Arial,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,8,10,10,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.50,0:00:02.00,Default,Rimuru,0,0,0,,Hello there.
+Dialogue: 0,0:00:01.00,0:00:03.00,Signs,,0,0,0,,{\pos(960,100)}Tempest Village
+Dialogue: 1,0:00:02.50,0:00:04.50,Main,Shion,0,0,0,,{\i1}Lord Rimuru!{\i0}\NWait for me!
+Dialogue: 0,0:00:02.50,0:00:04.50,Main,Shion,0,0,0,,{\i1}Lord Rimuru!{\i0}\NWait for me!
+Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\an8\pos(960,50)}A sign in the Default style
+Comment: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,This is a comment line
+Dialogue: 0,0:00:05.00,0:00:06.00,OP_Romaji,,0,0,0,,{\k20}ka{\k20}ze {\k30}ga
+Dialogue: 0,0:00:05.00,0:00:06.00,ED-Eng,,0,0,0,,The wind is blowing
+Dialogue: 0,0:00:05.00,0:00:06.00,TLNote,,0,0,0,,TL Note: senpai means upperclassman
+Dialogue: 0,0:00:05.20,0:00:06.50,Italics,Gobta,0,0,0,,- Who are you?\N- I'm Gobta.
+Dialogue: 0,0:00:06.60,0:00:07.00,Default,,0,0,0,,♪ la la la ♪
+Dialogue: 0,0:00:07.00,0:00:07.40,Default,,0,0,0,,{\p1}m 0 0 l 100 0 100 100 l 0 100{\p0}
+Dialogue: 0,0:00:07.50,0:00:07.80,Default,,0,0,0,,...
+Dialogue: 0,0:00:08.00,0:00:09.00,Top,Benimaru,0,0,0,,This one is very long and will certainly need to be sped up to fit its slot.
+Dialogue: 0,0:00:09.20,0:00:11.50,Default,,0,0,0,,The end.

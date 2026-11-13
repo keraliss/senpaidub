@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+*.mkv
+*.wav
+.venv-tts/
+.DS_Store
+dist/
+build/
+.ruff_cache/
+*.mp4
+*.mka
+# subtitles are ignored, except the test fixtures
+*.srt
+*.ass
+!tests/fixtures/
+!tests/fixtures/*.srt
+!tests/fixtures/*.ass
+# local files / secrets
+/rss
+google-api-key
+.env
+
+# Private roadmap notes
+*.local.md
