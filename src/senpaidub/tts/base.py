@@ -71,13 +71,28 @@ async def synthesize_all(
     concurrency: int = 4,
     retries: int = 3,
     on_done: Callable[[], None] | None = None,
+    slots: Sequence[float | None] | None = None,
 ) -> tuple[list[Path], SynthStats]:
-    """Synthesize every (text, voice) pair, returning the cached clip path for each."""
+    """Synthesize every (text, voice) pair, returning the cached clip path for each.
+
+    `slots` (seconds of room per line) is passed on as slot_s to backends with `takes_slot`.
+    Backends that batch (`batch_size` > 1) get the lines shortest-first, so each batch holds
+    lines of similar length and doesn't wait on one long line.
+    """
     sem = asyncio.Semaphore(max(1, concurrency))
     stats = SynthStats()
     inflight: dict[str, asyncio.Task[Path]] = {}
 
-    async def one(text: str, voice: str, ref: Path | None) -> Path:
+    takes_slot = getattr(backend, "takes_slot", False)
+
+    async def call(text: str, voice: str, ref: Path | None, slot: float | None) -> bytes:
+        if takes_slot:
+            return await backend.synthesize(text, voice, ref, slot_s=slot)  # type: ignore[call-arg]
+        if ref is not None:
+            return await backend.synthesize(text, voice, ref)
+        return await backend.synthesize(text, voice)
+
+    async def one(text: str, voice: str, ref: Path | None, slot: float | None) -> Path:
         key = cache.key(backend.name, voice, text, ref)
         if cache.get(key) is not None:
             stats.cached += 1
@@ -86,10 +101,7 @@ async def synthesize_all(
             delay = 1.0
             for attempt in range(1, retries + 1):
                 try:
-                    data = await (
-                        backend.synthesize(text, voice, ref) if ref is not None
-                        else backend.synthesize(text, voice)
-                    )  # fmt: skip
+                    data = await call(text, voice, ref, slot)
                     if not data:
                         raise RuntimeError("backend returned no audio")
                     stats.synthesized += 1
@@ -107,18 +119,25 @@ async def synthesize_all(
                     delay *= 2
         raise AssertionError("unreachable")
 
-    async def tracked(text: str, voice: str, ref: Path | None) -> Path:
+    async def tracked(text: str, voice: str, ref: Path | None, slot: float | None) -> Path:
         # Identical requests share one synthesis.
         k = f"{voice}\0{text}\0{ref}"
         if k not in inflight:
-            inflight[k] = asyncio.ensure_future(one(text, voice, ref))
+            inflight[k] = asyncio.ensure_future(one(text, voice, ref, slot))
         try:
             return await inflight[k]
         finally:
             if on_done:
                 on_done()
 
-    tasks = [asyncio.ensure_future(tracked(t, v, r)) for t, v, r in requests]
+    order = list(range(len(requests)))
+    if getattr(backend, "batch_size", 1) > 1:
+        order.sort(key=lambda i: len(requests[i][0]))
+    started = {
+        i: asyncio.ensure_future(tracked(*requests[i], slots[i] if slots is not None else None))
+        for i in order
+    }
+    tasks = [started[i] for i in range(len(requests))]
     try:
         paths = await asyncio.gather(*tasks)
     except BaseException:
@@ -138,14 +157,14 @@ def make_backend(name: str) -> TTSBackend:
         from .google import GoogleTTS
 
         return GoogleTTS()
-    if name == "turbo":
-        from .clone import CloneTTS
+    if name == "qwen":
+        from .qwen import QwenTTS
 
-        return CloneTTS()
+        return QwenTTS()
     if name == "mock":
         from .mock import MockTTS
 
         return MockTTS()
     from ..errors import UsageError
 
-    raise UsageError(f"Unknown TTS backend {name!r}. Choose turbo, edge, google or mock.")
+    raise UsageError(f"Unknown TTS backend {name!r}. Choose qwen, edge, google or mock.")

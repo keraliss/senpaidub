@@ -1,0 +1,9 @@
+{
+  "name": "senpaidub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Add an English TTS audio track to Japanese anime",
+  "scripts": {
+    "dev": "./.venv/bin/senpaidub serve"
+  }
+}

@@ -29,11 +29,11 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-The default voice engine (`turbo`, voice cloning) runs in a second virtual environment inside the project folder, because Chatterbox needs a different PyTorch version than Demucs:
+The default voice engine (`qwen`, voice cloning with [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)) runs in a second virtual environment, because it needs a different PyTorch version than Demucs:
 
 ```bash
-scripts/setup-tts.sh
-# same as: python3.13 -m venv .venv-tts && .venv-tts/bin/pip install chatterbox-tts "setuptools<80" soundfile
+senpaidub setup qwen      # installs it in the app data folder and downloads the ~4.5 GB model
+# or, inside the project folder: scripts/setup-tts.sh  (makes .venv-qwen)
 ```
 
 Dub an episode:
@@ -42,9 +42,9 @@ Dub an episode:
 senpaidub "Episode 01.mkv"
 ```
 
-The first run downloads the Demucs model and about 2 GB of Chatterbox weights. A cloned dub is slow: roughly 20 to 25 minutes per episode on an Apple M-series CPU, using about 4 GB of RAM.
+The first run downloads the Demucs model. Qwen runs on the GPU (Apple Silicon or NVIDIA) and voices several lines at once: about 10 minutes per 24-minute episode on an M5 MacBook Air (measured), using ~6 GB of memory for the model. Without a GPU it is several times slower, so use `edge` there.
 
-**Fast path (no 2 GB model):** skip `.venv-tts` and use the free Microsoft Edge voices. Male and female voices are picked automatically from the pitch of each original line. This needs an internet connection.
+**Fast path (no model download):** skip the setup and use the free Microsoft Edge voices. Male and female voices are picked automatically from the pitch of each original line. This needs an internet connection.
 
 ```bash
 senpaidub "Episode 01.mkv" --tts edge
@@ -74,7 +74,7 @@ Folder runs skip episodes that already have an output (use `--force` to redo the
 
 | `--tts` | Quality | Speed (one episode) | Cost | Setup |
 |---|---|---|---|---|
-| `turbo` (default) | Best. Clones each original voice, keeps emotion | Slow, ~20 to 25 min on an M-series CPU | Free, runs locally | `.venv-tts` + ~2 GB model download |
+| `qwen` (default) | Best. Clones each original voice | ~10 min on an Apple Silicon GPU (M5); much slower without a GPU | Free, runs locally | `senpaidub setup qwen` (~4.5 GB) |
 | `edge` | Good, generic voices; male/female picked by pitch | Fast | Free (Microsoft Edge online voices) | None, needs internet |
 | `google` | Very natural generic voices (Chirp 3 HD); male/female picked by pitch | Fast | Free tier, then paid (see below) | `pip install -e ".[google]"` + API key |
 
@@ -120,6 +120,18 @@ senpaidub ep05.mkv --series-name "My Show"
 
 The original episode and its subtitles are moved into `original/`, so deleting the series folder removes everything. Per-episode caches are deleted after each dub; add `--keep-cache` to keep them for faster re-runs.
 
+### Web UI
+
+Prefer clicking to typing? Start the local web app:
+
+```bash
+senpaidub serve            # opens http://127.0.0.1:7860 in your browser
+```
+
+Drag in an episode (or pick a whole season folder), choose the subtitle track and voice engine, and watch the progress live. Batches run in a queue you can pause, and finished dubs can be played, revealed in their folder or downloaded as a zip. The settings page edits the same `config.toml` as the command line, and a button installs the qwen voices (the same as `senpaidub setup qwen`).
+
+It runs only on your computer: the server listens on `127.0.0.1`, and the link it prints carries a private key, so other devices and other websites can't use it. `--port`, `--library` and `--no-browser` are available. Unfinished jobs resume the next time you run `senpaidub serve`.
+
 ### Stremio mode
 
 If you watch with [Stremio](https://www.stremio.com), senpaidub can dub the episodes Stremio is currently streaming. It reads the list of loaded files from Stremio's local streaming server (`127.0.0.1:11470`), matches them against a series name, downloads them from that local server and dubs them in episode order:
@@ -144,7 +156,7 @@ video ─┬─ subtitles ──> filter dialogue ──────────
 
 1. **Subtitles.** Pick the English text track (or `--sub-file`, or OCR) and keep only dialogue lines.
 2. **Separate.** Demucs `htdemucs` splits the original audio into vocals and background, in 60 s chunks. Results are cached.
-3. **Synthesize.** `turbo` clones each line from that line's original vocals; `edge`/`google` use stock voices. A male/female check regenerates cloned lines that came out in the wrong register. Clips are cached, so re-runs make no new TTS calls.
+3. **Synthesize.** `qwen` clones each line's voice from that line's original vocals, in batches on the GPU; `edge`/`google` use stock voices. A male/female check regenerates cloned lines that came out in the wrong register. Clips are cached, so re-runs make no new TTS calls.
 4. **Fit.** Each clip starts at its subtitle time and may run into the silence before the next line. If it still doesn't fit, it is sped up (up to `--max-speedup`, default 1.4x), then allowed to overflow with a warning. Speech is never cut.
 5. **Mix.** Each line is matched to the original line's volume and mixed over the background. The original vocals are removed only where English lines play and kept everywhere else.
 6. **Encode and mux.** The track is matched to the original's loudness, peak-limited, encoded as AAC 192k (or `--codec opus`) and added to a new `.mkv` with all original streams copied.
@@ -168,17 +180,20 @@ Environment variables:
 | Variable | Purpose |
 |---|---|
 | `SENPAIDUB_CACHE` | Cache folder (default: the user cache folder) |
-| `SENPAIDUB_CLONE_PYTHON` | Python with `chatterbox-tts` installed, if not `.venv-tts` in the project folder |
-| `SENPAIDUB_CLONE_DEVICE` | Device for Chatterbox (default: CUDA if available, else CPU) |
+| `SENPAIDUB_QWEN_PYTHON` | Python with `qwen-tts` installed, if not `.venv-qwen` in the project folder or the one `senpaidub setup qwen` made |
+| `SENPAIDUB_QWEN_DEVICE` | Device for Qwen (default: CUDA, else Apple GPU (`mps`), else CPU) |
+| `SENPAIDUB_QWEN_MODEL` | Qwen model (default `Qwen/Qwen3-TTS-12Hz-1.7B-Base`; `...-0.6B-Base` is smaller, similar speed on a GPU) |
+| `SENPAIDUB_QWEN_BATCH` | Lines voiced at once (default 8, which keeps memory moderate on a 16 GB Mac; 16 is ~25% faster but uses ~2 GB more) |
 | `GOOGLE_API_KEY` | Key for `--tts google` |
 
 ## Troubleshooting
 
 - **Japanese voices play before or between English lines.** The original vocals are kept wherever no English line plays, so a line missing from the subtitles stays in Japanese. Check with `--dry-run --verbose` whether the line was skipped by the filter, or use a more complete subtitle file.
 - **"overflows its slot" warnings.** The English line was longer than the gap available even at `--max-speedup`, so it runs into the next line. A few per episode are normal; raise `--max-speedup` to squeeze harder.
-- **Warning about unauthenticated requests to the Hugging Face Hub.** Harmless. The Chatterbox model downloads without a token.
-- **The first run is slow or seems stuck.** It is downloading models (Demucs, and about 2 GB for Chatterbox). Later runs use the local copies.
-- **"The 'turbo' voice-cloning backend needs its own Python environment".** Create `.venv-tts` as in the quick start, or set `SENPAIDUB_CLONE_PYTHON`, or use `--tts edge`.
+- **Warning about unauthenticated requests to the Hugging Face Hub.** Harmless. The Qwen model downloads without a token.
+- **The first run is slow or seems stuck.** It is downloading models (Demucs, and about 4.5 GB for Qwen if `senpaidub setup qwen` didn't already). Later runs use the local copies.
+- **"The 'qwen' voice-cloning backend needs its own Python environment".** Run `senpaidub setup qwen`, or set `SENPAIDUB_QWEN_PYTHON`, or use `--tts edge`.
+- **"The 'turbo' voices were replaced by 'qwen'".** Remove `tts = "turbo"` from `config.toml` (or set it to `qwen`).
 - **"No dialogue lines left after filtering".** Run `--dry-run --verbose` to see why lines were skipped, then adjust `--include-styles` / `--exclude-styles` or pick another `--sub-track`.
 - **Running out of disk.** Caches are deleted per episode in series mode; otherwise they live in the user cache folder (or `SENPAIDUB_CACHE`) and can be deleted at any time.
 
@@ -210,4 +225,4 @@ senpaidub is meant for personal viewing of media you have the right to use. Plea
 
 MIT. See [LICENSE](LICENSE).
 
-Models and services used at runtime have their own licenses and terms: [Demucs](https://github.com/facebookresearch/demucs), [Chatterbox](https://github.com/resemble-ai/chatterbox), Microsoft Edge TTS and Google Cloud Text-to-Speech. This project isn't affiliated with any of them or with Stremio.
+Models and services used at runtime have their own licenses and terms: [Demucs](https://github.com/facebookresearch/demucs), [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0), Microsoft Edge TTS and Google Cloud Text-to-Speech. This project isn't affiliated with any of them or with Stremio.

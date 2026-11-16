@@ -10,6 +10,7 @@ from rich.console import Console
 
 from .errors import SenpaiDubError
 from .pipeline import OUTPUT_SUFFIX, Options, Result, process_file
+from .report import Reporter
 
 VIDEO_EXTS = {".mkv", ".mp4"}
 
@@ -30,7 +31,9 @@ def find_videos(folder: Path) -> list[Path]:
     return sorted(found, key=natural_key)
 
 
-def process_folder(folder: Path, opts: Options, console: Console) -> tuple[list[Result], list[tuple[Path, str, int]]]:
+def process_folder(
+    folder: Path, opts: Options, console: Console, reporter: Reporter | None = None
+) -> tuple[list[Result], list[tuple[Path, str, int]]]:
     videos = find_videos(folder)
     if not videos:
         console.print(f"[yellow]No .mkv/.mp4 files found in {folder}[/yellow]")
@@ -45,7 +48,7 @@ def process_folder(folder: Path, opts: Options, console: Console) -> tuple[list[
             out_dir.mkdir(parents=True, exist_ok=True)
             file_opts = replace(opts, output=out_dir)
         try:
-            res = process_file(video, file_opts, console)
+            res = process_file(video, file_opts, console, reporter)
             results.append(res)
             report(console, res)
         except SenpaiDubError as e:

@@ -15,11 +15,10 @@ from rich.table import Table
 
 from . import __version__
 from .batch import process_folder, report
-from .config import config_path, load_config, resolve
+from .config import config_path, load_config, resolve, validate_config
 from .download import is_url, probe_url, sanitize_filename
 from .errors import SenpaiDubError, UsageError
 from .ffmpeg import check_tools
-from .mix import CODECS
 from .pipeline import Options, process_file, process_url
 from .probe import MediaInfo, probe
 
@@ -44,8 +43,8 @@ def dub(
     list_tracks: bool = typer.Option(False, "--list-tracks", help="Print audio and subtitle streams and exit."),
     sub_track: Optional[int] = typer.Option(None, "--sub-track", metavar="N", help="Subtitle stream index to voice (see --list-tracks)."),
     sub_file: Optional[Path] = typer.Option(None, "--sub-file", help="External .srt/.ass instead of an embedded track."),
-    tts: Optional[str] = typer.Option(None, "--tts", metavar="[turbo|edge|google]", help="TTS backend: turbo = voice cloning from the original audio (default), edge = fast generic voices."),
-    voice: Optional[str] = typer.Option(None, "--voice", help="Voice for edge/google (default: en-US-AriaNeural for edge). Ignored by turbo."),
+    tts: Optional[str] = typer.Option(None, "--tts", metavar="[qwen|edge|google]", help="TTS backend: qwen = local voice cloning from the original audio, on the GPU (default); edge = fast generic online voices."),
+    voice: Optional[str] = typer.Option(None, "--voice", help="Voice for edge/google (default: en-US-AriaNeural for edge). Ignored by qwen."),
     voice_map: Optional[Path] = typer.Option(None, "--voice-map", help="YAML mapping speaker names to voices."),
     no_separate: bool = typer.Option(False, "--no-separate", help="Skip vocal removal; duck the original audio under speech."),
     duck_db: Optional[float] = typer.Option(None, "--duck-db", help="Ducking amount in dB with --no-separate (default: -12)."),
@@ -89,7 +88,7 @@ def dub(
             load_config(),
         )  # fmt: skip
         log.debug("Config file: %s", config_path())
-        _validate(cfg)
+        validate_config(cfg)
         if sub_file is not None and not sub_file.is_file():
             raise UsageError(f"--sub-file not found: {sub_file}")
         opts = Options(
@@ -176,19 +175,6 @@ def dub(
         sys.exit(130)
 
 
-def _validate(cfg: dict) -> None:
-    if cfg["tts"] not in ("turbo", "edge", "google", "mock"):
-        raise UsageError(f"--tts must be turbo, edge or google (got {cfg['tts']!r}).")
-    if cfg["codec"] not in CODECS:
-        raise UsageError(f"--codec must be one of {', '.join(CODECS)} (got {cfg['codec']!r}).")
-    if cfg["device"] not in ("auto", "cpu", "cuda", "mps"):
-        raise UsageError(f"--device must be auto, cpu, cuda or mps (got {cfg['device']!r}).")
-    if float(cfg["max_speedup"]) < 1.0:
-        raise UsageError("--max-speedup must be at least 1.0.")
-    if int(cfg["concurrency"]) < 1:
-        raise UsageError("--concurrency must be at least 1.")
-
-
 def _print_tracks(info: MediaInfo) -> None:
     t = Table(title=f"Streams in {info.path}")
     for col, kw in (("#", {"justify": "right"}), ("Type", {}), ("Codec", {}), ("Kind", {}),
@@ -220,9 +206,120 @@ def _is(exc: BaseException, name: str) -> bool:
     return any(c.__name__ == name for c in type(exc).__mro__)
 
 
-def main() -> None:
+# `serve` and `setup` live in their own Typer apps: `dub` takes an optional INPUT argument, so
+# subcommands on `app` would break `senpaidub ep.mkv`. main() dispatches on the first word.
+serve_app = typer.Typer(add_completion=False, context_settings={"help_option_names": ["-h", "--help"]})
+setup_app = typer.Typer(add_completion=False, context_settings={"help_option_names": ["-h", "--help"]})
+SUBCOMMANDS = {"serve": serve_app, "setup": setup_app}
+
+
+def _free_port(start: int, tries: int = 50):
+    import socket
+
+    for port in range(start, start + tries):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            sock.close()
+            continue
+        return sock, port
+    raise UsageError(f"No free port between {start} and {start + tries - 1}; pass --port.")
+
+
+@serve_app.command()
+def serve(
+    port: int = typer.Option(7860, "--port", help="Port to listen on (the next free one is used if it's taken)."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open the browser."),
+    library: Optional[Path] = typer.Option(None, "--library", help="Library folder for series (default: from config.toml)."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Log every HTTP request."),
+) -> None:
+    """Start the local web UI (http://127.0.0.1:7860). Only this computer can reach it."""
+    import secrets
+    import signal
+    import threading
+    import webbrowser
+
     try:
-        rv = app(standalone_mode=False)
+        import uvicorn
+
+        from .server.app import create_app
+        from .server.jobs import JobManager
+    except ImportError as e:  # pragma: no cover
+        console.print(f"[bold red]Error:[/bold red] the web UI needs fastapi and uvicorn ({e}). "
+                      "Reinstall senpaidub: pip install -e .")  # fmt: skip
+        sys.exit(1)
+    try:
+        check_tools()
+        cfg = resolve({}, load_config())
+        lib = (library or Path(cfg["library"])).expanduser().resolve()
+        sock, port = _free_port(port)
+    except SenpaiDubError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(e.exit_code)
+    token = secrets.token_urlsafe(24)
+    manager = JobManager(library=lib if library else None)
+    manager.start()
+    url = f"http://127.0.0.1:{port}/?token={token}"
+    console.print("[bold]Senpai Dub[/bold] is running. Open this link:")
+    console.print(url, markup=False, highlight=False, soft_wrap=True)
+    console.print("It includes your private key, so don't share it. Press Ctrl+C to stop.")
+    if not no_browser:
+        timer = threading.Timer(0.8, lambda: webbrowser.open(url))
+        timer.daemon = True
+        timer.start()
+    config = uvicorn.Config(create_app(manager, token, lib, port=port), host="127.0.0.1", port=port,
+                            log_level="info" if verbose else "warning", access_log=verbose)  # fmt: skip
+    server = uvicorn.Server(config)
+
+    def _terminate(_sig, _frame):  # uvicorn re-raises SIGTERM after a graceful exit; stop the workers too
+        raise KeyboardInterrupt
+
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _terminate)
+    try:
+        server.run(sockets=[sock])
+    except KeyboardInterrupt:
+        pass
+    finally:
+        manager.close()
+        console.print("[yellow]Stopped.[/yellow] Unfinished dubs will continue next time you run senpaidub serve.")
+
+
+@setup_app.command()
+def setup(
+    what: str = typer.Argument(..., metavar="qwen", help="What to set up. Only 'qwen' (local voice cloning) so far."),
+    no_model: bool = typer.Option(False, "--no-model", help="Skip downloading the ~4.5 GB voice model now."),
+) -> None:
+    """Install optional parts. `senpaidub setup qwen` installs local voice cloning (a few GB)."""
+    from .setup_tts import SetupError, install
+
+    if what != "qwen":
+        console.print(f"[bold red]Error:[/bold red] unknown setup target {what!r}; try `senpaidub setup qwen`.")
+        sys.exit(1)
+    try:
+        python = install(on_line=lambda line: console.print(line, markup=False, highlight=False),
+                         download_model=not no_model)  # fmt: skip
+    except SetupError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        sys.exit(e.exit_code)
+    except KeyboardInterrupt:
+        console.print("[yellow]Interrupted.[/yellow]")
+        sys.exit(130)
+    console.print(f"[green]✓[/green] Qwen voices installed ({python}).")
+
+
+def _pick_app(argv: list[str]):
+    """The Typer app and args for argv (without the program name)."""
+    if argv and argv[0] in SUBCOMMANDS and not Path(argv[0]).exists():
+        return SUBCOMMANDS[argv[0]], argv[1:], f"senpaidub {argv[0]}"
+    return app, argv, "senpaidub"
+
+
+def main() -> None:
+    target, args, prog = _pick_app(sys.argv[1:])
+    try:
+        rv = target(args=args, prog_name=prog, standalone_mode=False)
     except Exception as e:
         if _is(e, "UsageError") and hasattr(e, "show"):
             e.show()

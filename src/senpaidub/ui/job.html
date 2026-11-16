@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dubbing — Senpai Dub</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/run.css">
+</head>
+<body>
+<div class="page">
+  <div id="header"></div>
+
+  <div id="page-error" class="banner banner--error" role="alert" hidden>
+    <span class="banner__icon" aria-hidden="true">!</span>
+    <div class="banner__body">
+      <span class="banner__title">Couldn't load this dub</span>
+      <span id="page-error-msg"></span>
+    </div>
+    <div class="banner__actions"><button type="button" class="btn btn--small btn--secondary" id="page-retry">Try again</button></div>
+  </div>
+
+  <main id="main" class="stack stack--loose" aria-busy="true">
+    <p class="muted" id="loading">Loading…</p>
+  </main>
+  <p class="visually-hidden" id="sr-status" aria-live="polite" role="status"></p>
+</div>
+
+<script type="module">
+import { api, events, setTitle, fmtDuration, renderHeader, mascot, toast, el } from "/assets/app.js";
+import {
+  renderStageCards, renderLog, coalesce, liveElapsed, liveEta, openPath,
+  pct, jobTitleName, stageMeta, statusChip,
+} from "/assets/run.js";
+
+const id = new URLSearchParams(location.search).get("id");
+const main = document.getElementById("main");
+const srStatus = document.getElementById("sr-status");
+const pageError = document.getElementById("page-error");
+let job = null;
+let stamp = performance.now();
+let viewStatus = null; // which state the DOM was built for
+let view = null;       // refs to nodes that get patched
+let lastAnnounce = "";
+let busy = false;
+
+let badgeKey = "";
+function setBadge(kind, text) {
+  if (badgeKey === kind + text) return;
+  badgeKey = kind + text;
+  renderHeader(document.getElementById("header"), { badge: text, badgeKind: kind });
+}
+setBadge("yellow", "● ON AIR");
+
+function showError(msg) {
+  document.getElementById("page-error-msg").textContent = msg;
+  pageError.hidden = false;
+  main.setAttribute("aria-busy", "false");
+}
+document.getElementById("page-retry").addEventListener("click", load);
+
+async function load() {
+  if (!id) { showError("This link has no dub id. Start from the home page."); return; }
+  try {
+    const j = await api(`/api/jobs/${encodeURIComponent(id)}`);
+    pageError.hidden = true;
+    accept(j, true);
+  } catch (err) {
+    if (!job) showError(err.message);
+  }
+}
+
+function accept(j, immediate = false) {
+  job = j;
+  stamp = performance.now();
+  if (immediate) render(); else push(j);
+}
+const push = coalesce(() => render(), 250);
+
+/* ---------- actions ---------- */
+async function act(path, label, method = "POST") {
+  if (busy) return;
+  busy = true;
+  setBusy(true);
+  try {
+    const j = await api(path, { method });
+    if (j && j.id) accept(j, true);
+  } catch (err) {
+    toast(`${label}: ${err.message}`, "error");
+  } finally {
+    busy = false;
+    setBusy(false);
+  }
+}
+function setBusy(b) {
+  main.querySelectorAll("button[data-act]").forEach((btn) => { btn.disabled = b; btn.setAttribute("aria-busy", String(b)); });
+}
+const cancelJob = () => act(`/api/jobs/${encodeURIComponent(id)}/cancel`, "Couldn't cancel");
+const retryJob = () => act(`/api/jobs/${encodeURIComponent(id)}/retry`, "Couldn't retry");
+
+function btn(text, cls, onClick, extra = {}) {
+  return el("button", { type: "button", class: `btn ${cls}`, onClick, "data-act": extra.act ? "1" : null, text });
+}
+
+/* ---------- views ---------- */
+function buildActive(j) {
+  // Running or waiting.
+  const pctEl = el("div", { class: "bigpct", "aria-hidden": "true", text: "0%" });
+  const bar = el("div", { class: "progress__bar" });
+  const progress = el("div", { class: "progress", role: "progressbar", "aria-label": "Overall progress", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, bar);
+  const elapsedEl = el("span", { text: "Elapsed 0:00" });
+  const etaEl = el("span", { text: "About — left" });
+  const stageEl = el("p", { class: "run-stage", "aria-hidden": "true" });
+  const bubble = el("div", { class: "bubble", text: "" });
+  const mascotEl = el("span", { class: "mascot" });
+  mascotEl.innerHTML = mascot("concentrating");
+  const cards = el("ol", { class: "stage-cards", "aria-label": "Stages" });
+  const logBody = el("pre", { class: "log__body", tabindex: "0", role: "log", "aria-label": "Activity log" });
+  const cancelBtn = btn("Cancel", "btn--danger", cancelJob, { act: true });
+  const nameEl = el("h1", { class: "display display--md run-name", id: "page-title" });
+  const tagEl = el("span", { class: "tag" });
+  const chipSlot = el("span");
+
+  const top = el(
+    "section",
+    { class: "panel panel--burst-calm panel--shadow panel--pad-lg", "aria-labelledby": "page-title" },
+    el("span", { class: "sfx sfx--tr", lang: "ja", "aria-hidden": "true", text: "ゴゴゴ" }),
+    el(
+      "div",
+      { class: "run-top" },
+      el("div", { class: "run-top__main" }, el("div", { class: "row" }, tagEl, chipSlot), nameEl, stageEl),
+      el("div", { class: "run-side" }, pctEl, el("div", { class: "stack stack--tight", style: { alignItems: "center" } }, mascotEl, bubble)),
+    ),
+    el("div", { class: "stack mt-m" }, progress, el("div", { class: "progress-meta" }, elapsedEl, etaEl), el("div", { class: "run-actions" }, cancelBtn)),
+  );
+  const logPanel = el("section", { class: "log", "aria-label": "Log" }, el("span", { class: "log__title", text: "BACKSTAGE LOG" }), logBody);
+  main.replaceChildren(top, el("section", { "aria-label": "Stages" }, cards), logPanel);
+  return { kind: "active", pctEl, bar, progress, elapsedEl, etaEl, stageEl, bubble, update: renderStageCards(cards), logBody, nameEl, tagEl, chipSlot, cancelBtn };
+}
+
+function patchActive(j) {
+  const v = view;
+  const p = pct(j.progress);
+  v.nameEl.textContent = j.name || "Episode";
+  v.tagEl.textContent = j.status === "waiting" ? "IN THE QUEUE" : "NOW DUBBING";
+  v.chipSlot.replaceChildren(statusChip(j.status));
+  v.pctEl.textContent = j.status === "waiting" ? "…" : `${p}%`;
+  v.bar.style.setProperty("--value", `${j.status === "waiting" ? 0 : p}%`);
+  v.progress.setAttribute("aria-valuenow", String(p));
+  v.progress.classList.toggle("progress--idle", j.status === "waiting");
+  v.stageEl.textContent = j.status === "waiting" ? "Waiting for its turn. Other dubs are ahead of it." : stageMeta(j) || "Starting up…";
+  v.bubble.textContent = j.status === "waiting" ? "Ready when you are!" : p < 25 ? "On it!" : p < 60 ? "Almost…" : p < 90 ? "So close!" : "Last bits!";
+  v.update(j);
+  renderLog(v.logBody, j.log);
+  tick();
+  setTitle(j.status === "waiting" ? `Waiting · ${jobTitleName(j.name)}` : `${p}% · ${jobTitleName(j.name)}`);
+  announce(j, p);
+}
+
+function tick() {
+  if (!job || !view || view.kind !== "active") return;
+  const e = liveElapsed(job, stamp);
+  const t = liveEta(job, stamp);
+  view.elapsedEl.textContent = `Elapsed ${job.status === "waiting" ? "—" : fmtDuration(e)}`;
+  view.etaEl.textContent = t == null ? "About — left" : `About ${fmtDuration(t, { words: true })} left`;
+}
+setInterval(tick, 1000);
+
+function announce(j, p) {
+  // Polite live region: only on stage change or every 10 %, so screen readers aren't flooded.
+  const msg = `${j.stage_label || "Dubbing"}, ${Math.floor(p / 10) * 10} percent`;
+  if (msg !== lastAnnounce) { lastAnnounce = msg; srStatus.textContent = msg; }
+}
+
+function buildDone(j) {
+  const r = j.result || {};
+  const stats = [];
+  const add = (n, label) => { if (n != null) stats.push(el("li", { class: "run-stat" }, el("b", { text: String(n) }), el("span", { text: label }))); };
+  add(r.voiced, "lines voiced");
+  if (j.elapsed_s != null) stats.push(el("li", { class: "run-stat" }, el("b", { text: fmtDuration(j.elapsed_s) }), el("span", { text: "time taken" })));
+  add(r.sped_up, "sped up to fit");
+  add(r.overflowing, "ran long");
+  add(r.voice_fixed, "voices fixed");
+  if (r.tts_cached != null && j.tts !== "edge") add(r.tts_cached, "clips reused");
+  const hasOut = Boolean(j.output);
+  const warns = (j.log || []).filter((e) => e.level === "warn");
+  const logBody = el("pre", { class: "log__body", tabindex: "0", role: "log", "aria-label": "Warnings" });
+  const m = el("span", { class: "mascot mascot--lg" });
+  m.innerHTML = mascot("celebrating");
+  main.replaceChildren(
+    el(
+      "section",
+      { class: "panel panel--burst-accent panel--shadow panel--pad-lg", "aria-labelledby": "page-title" },
+      el("span", { class: "sfx sfx--tr", lang: "ja", "aria-hidden": "true", text: "完成！" }),
+      el(
+        "div",
+        { class: "run-top" },
+        el(
+          "div",
+          { class: "run-top__main" },
+          el("span", { class: "tag tag--yellow", text: "FINISHED" }),
+          el("h1", { class: "display display--xl", id: "page-title", text: "DUBBED!" }),
+          el("p", { class: "bold run-name", text: j.name || "" }),
+          hasOut ? el("p", { class: "small mono run-name", text: j.output }) : null,
+        ),
+        el("div", { class: "run-side" }, m),
+      ),
+      el("ul", { class: "run-stats mt-m", "aria-label": "Results" }, stats),
+      el(
+        "div",
+        { class: "run-actions mt-m" },
+        hasOut ? btn("▶ Play", "btn--secondary", () => openPath(j.output, "play")) : null,
+        hasOut ? btn("Open folder", "btn--secondary", () => openPath(j.output, "reveal")) : null,
+        el("a", { class: "btn btn--ink", href: "/", text: "Next episode →" }),
+      ),
+    ),
+    warns.length ? el("section", { class: "log log--light", "aria-label": "Warnings" }, el("span", { class: "log__title", text: `WARNINGS (${warns.length}) · normal, usually fine` }), logBody) : null,
+  );
+  if (warns.length) renderLog(logBody, warns);
+  return { kind: "done" };
+}
+
+function buildFailed(j) {
+  const cancelled = j.status === "cancelled";
+  const cards = el("ol", { class: "stage-cards", "aria-label": "Stages" });
+  const upd = renderStageCards(cards);
+  upd(j);
+  const logBody = el("pre", { class: "log__body", tabindex: "0", role: "log", "aria-label": "Activity log" });
+  main.replaceChildren(
+    el(
+      "section",
+      { class: "panel panel--shadow panel--pad-lg", "aria-labelledby": "page-title" },
+      el("span", { class: "tag", text: cancelled ? "STOPPED" : "SOMETHING BROKE" }),
+      el("h1", { class: "display display--lg mt-s", id: "page-title", text: cancelled ? "CANCELLED" : "FAILED" }),
+      el("p", { class: "bold run-name", text: j.name || "" }),
+      el(
+        "div",
+        { class: `banner ${cancelled ? "banner--warn" : "banner--error"} mt-m`, role: "alert" },
+        el("span", { class: "banner__icon", "aria-hidden": "true", text: cancelled ? "■" : "!" }),
+        el(
+          "div",
+          { class: "banner__body" },
+          el("span", { class: "banner__title", text: cancelled ? "This dub was cancelled" : "The dub stopped" }),
+          el("p", { class: "run-error", text: cancelled ? "Nothing was kept, so you can start it again from scratch." : j.error || "Unknown error." }),
+          !cancelled && j.exit_code != null ? el("span", { class: "small", text: `Exit code ${j.exit_code}` }) : null,
+        ),
+      ),
+      el("div", { class: "run-actions mt-m" }, btn("↻ Retry", "btn--primary", retryJob, { act: true }), el("a", { class: "btn btn--secondary", href: "/", text: "Back to start" })),
+    ),
+    el("section", { "aria-label": "Stages" }, cards),
+    el("section", { class: "log", "aria-label": "Log" }, el("span", { class: "log__title", text: "BACKSTAGE LOG" }), logBody),
+  );
+  renderLog(logBody, j.log);
+  return { kind: "failed" };
+}
+
+function buildSkipped(j) {
+  const hasOut = Boolean(j.output);
+  const m = el("span", { class: "mascot" });
+  m.innerHTML = mascot("normal");
+  main.replaceChildren(
+    el(
+      "section",
+      { class: "panel panel--yellow panel--shadow panel--pad-lg", "aria-labelledby": "page-title" },
+      el(
+        "div",
+        { class: "run-top" },
+        el(
+          "div",
+          { class: "run-top__main" },
+          el("span", { class: "tag", text: "NOTHING TO DO" }),
+          el("h1", { class: "display display--lg", id: "page-title", text: "ALREADY DUBBED" }),
+          el("p", { class: "bold run-name", text: j.name || "" }),
+          el("p", { text: (j.result && j.result.skipped_reason) || "A finished dub already exists, so this episode was left alone." }),
+          hasOut ? el("p", { class: "small mono run-name", text: j.output }) : null,
+        ),
+        el("div", { class: "run-side" }, m),
+      ),
+      el(
+        "div",
+        { class: "run-actions mt-m" },
+        hasOut ? btn("▶ Play", "btn--secondary", () => openPath(j.output, "play")) : null,
+        hasOut ? btn("Open folder", "btn--secondary", () => openPath(j.output, "reveal")) : null,
+        el("a", { class: "btn btn--ink", href: "/", text: "Next episode →" }),
+      ),
+    ),
+  );
+  return { kind: "skipped" };
+}
+
+function render() {
+  if (!job) return;
+  main.setAttribute("aria-busy", "false");
+  const s = job.status;
+  const group = s === "running" || s === "waiting" ? "active" : s;
+  if (viewStatus !== group) {
+    viewStatus = group;
+    view = s === "done" ? buildDone(job) : s === "failed" || s === "cancelled" ? buildFailed(job) : s === "skipped" ? buildSkipped(job) : buildActive(job);
+    if (s === "done") { setTitle("✓ Done"); setBadge("ink", "✓ FINISHED"); srStatus.textContent = "Dub finished."; }
+    else if (s === "failed") { setTitle("✗ Failed"); setBadge("live", "✗ FAILED"); srStatus.textContent = "Dub failed."; }
+    else if (s === "cancelled") { setTitle("Cancelled"); setBadge("ink", "CANCELLED"); }
+    else if (s === "skipped") { setTitle("Already dubbed"); setBadge("ink", "SKIPPED"); }
+    else setBadge("live", "● RECORDING");
+  }
+  if (view.kind === "active") {
+    patchActive(job);
+    setBadge("live", job.status === "waiting" ? "QUEUED" : "● RECORDING");
+  }
+}
+
+events(
+  (j) => { if (j && j.id === id) accept(j, !job || job.status !== j.status || j.status !== "running"); },
+  null,
+  { onStatus: (s) => { if (s === "open" && job) load(); } },
+);
+load();
+</script>
+</body>
+</html>

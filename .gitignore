@@ -5,6 +5,7 @@ __pycache__/
 *.mkv
 *.wav
 .venv-tts/
+.venv-qwen/
 .DS_Store
 dist/
 build/
@@ -24,3 +25,6 @@ google-api-key
 
 # Private roadmap notes
 *.local.md
+
+# Private design docs and Claude Code project files
+.claude/

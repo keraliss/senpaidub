@@ -265,3 +265,13 @@ def test_voice_mismatch_rule():
     assert not is_mismatch(190, 140)  # original too close to the boundary to judge
     assert not is_mismatch(250, 170)  # clip too close to the boundary to judge
     assert not is_mismatch(None, 130) and not is_mismatch(250, None)
+
+
+def test_config_turbo_points_to_qwen(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('tts = "turbo"\n')
+    from senpaidub.config import validate_config
+
+    with pytest.raises(UsageError, match="replaced by 'qwen'"):
+        validate_config(resolve({"tts": None}, load_config(p)))
+    assert DEFAULTS["tts"] == "qwen"

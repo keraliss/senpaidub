@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Senpai Dub</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/flow.css">
+</head>
+<body>
+<div class="page">
+  <div id="header"></div>
+
+  <!-- machine check + qwen install -->
+  <div id="machine" class="machine-banner" aria-live="polite"></div>
+
+  <div class="grid hero-grid">
+    <section class="panel panel--burst panel--shadow panel--pad-lg span-7" aria-labelledby="hero-title">
+      <span class="sfx sfx--tr" lang="ja" aria-hidden="true">ゴゴゴ</span>
+      <div class="hero-copy">
+        <div class="stack">
+          <span class="tag">EPISODE 00 · PILOT</span>
+          <h1 class="display display--xl" id="hero-title">Every episode deserves a <span class="mark-accent">voice.</span></h1>
+          <p class="bold" style="max-width: 400px">Drop an episode. Senpai reads the subtitles, voices every line in English and hands back an .mkv with the dub built in.</p>
+        </div>
+        <div class="hero-mascot-row">
+          <span class="mascot" id="hero-mascot"></span>
+          <span class="bubble">Leave it to Senpai!</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="stack span-5">
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-describedby="drop-hint" aria-label="Drop episodes here, or press Enter to choose files">
+        <span class="sfx sfx--tr" lang="ja" aria-hidden="true">ドン!</span>
+        <span class="dropzone__icon" aria-hidden="true">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#141217" stroke-width="2.5" stroke-linecap="square"><path d="M12 17V4"/><path d="M6 10l6-6 6 6"/><path d="M4 21h16"/></svg>
+        </span>
+        <span class="dropzone__title">DROP THE<br>EPISODES</span>
+        <span class="bold" id="drop-hint">One or many · or click to pick</span>
+        <span class="row" style="justify-content:center"><span class="chip chip--outline">.MKV</span><span class="chip chip--outline">.MP4</span></span>
+        <input id="video-input" class="visually-hidden" type="file" multiple accept=".mkv,.mp4,video/x-matroska,video/mp4" tabindex="-1" aria-hidden="true">
+      </div>
+
+      <div class="dropzone dropzone--small" id="subzone" role="button" tabindex="0" aria-describedby="sub-hint">
+        <span class="stack stack--tight">
+          <span class="dropzone__title">+ EXTRA SUBTITLES</span>
+          <span class="small" id="sub-hint">Optional .srt or .ass, if the video's own tracks aren't right</span>
+        </span>
+        <span class="chip chip--ink">OPTIONAL</span>
+        <input id="sub-input" class="visually-hidden" type="file" accept=".srt,.ass,.ssa" tabindex="-1" aria-hidden="true">
+      </div>
+
+      <button type="button" class="btn btn--secondary btn--block" id="folder-btn">Use a folder on disk instead…</button>
+    </div>
+  </div>
+
+  <!-- uploads + next -->
+  <section class="panel stack" id="uploads-panel" aria-labelledby="uploads-title" hidden>
+    <div class="panel-head">
+      <h2 class="panel-title" id="uploads-title">ON THE TABLE</h2>
+      <span class="panel-sub" id="uploads-sub"></span>
+    </div>
+    <ul class="upload-list" id="upload-list"></ul>
+    <div class="next-bar">
+      <p class="small bold" id="next-note" aria-live="polite"></p>
+      <button type="button" class="btn btn--primary btn--big" id="next-btn" disabled>NEXT: SET UP THE DUB →</button>
+    </div>
+  </section>
+
+  <!-- history -->
+  <section class="stack" aria-labelledby="history-title" id="history-section">
+    <h2 class="panel-title" id="history-title">PREVIOUSLY ON SENPAI DUB…</h2>
+    <div id="history"><p class="small muted">Loading…</p></div>
+  </section>
+</div>
+
+<script type="module">
+import { api, ApiError, el, folderPicker, fmtBytes, mascot, renderHeader, setTitle, toast, uploadFile } from "/assets/app.js";
+import { basename, isSubName, isVideoName, naturalCompare, pathsQuery } from "/assets/flow.js";
+
+const $ = (id) => document.getElementById(id);
+
+renderHeader($("header"), { badge: "● ON AIR" });
+setTitle("");
+$("hero-mascot").innerHTML = mascot("normal"); // static SVG from app.js
+
+/* =========================================================
+   Uploads
+   ========================================================= */
+
+/** @type {{key:number, file:File, kind:"video"|"subtitle", status:"uploading"|"done"|"error", frac:number, upload:object|null, error:string|null, ctrl:AbortController, row:object}[]} */
+const items = [];
+let keySeq = 0;
+
+const videoInput = $("video-input");
+const subInput = $("sub-input");
+const dropzone = $("dropzone");
+const subzone = $("subzone");
+
+function videos() { return items.filter((i) => i.kind === "video"); }
+function subtitle() { return items.find((i) => i.kind === "subtitle") || null; }
+
+function openPicker(input) { input.value = ""; input.click(); }
+function activateKey(fn) {
+  return (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); }
+  };
+}
+dropzone.addEventListener("click", () => openPicker(videoInput));
+dropzone.addEventListener("keydown", activateKey(() => openPicker(videoInput)));
+subzone.addEventListener("click", () => { if (subzone.getAttribute("aria-disabled") !== "true") openPicker(subInput); });
+subzone.addEventListener("keydown", activateKey(() => { if (subzone.getAttribute("aria-disabled") !== "true") openPicker(subInput); }));
+videoInput.addEventListener("change", () => addFiles([...videoInput.files]));
+subInput.addEventListener("change", () => addFiles([...subInput.files]));
+
+// Drag and drop: highlight the zone, and accept a drop anywhere on the page
+// (otherwise the browser would navigate away to the dropped file).
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+window.addEventListener("dragenter", (e) => { if (hasFiles(e)) { e.preventDefault(); dragDepth++; dropzone.classList.add("is-over"); } });
+window.addEventListener("dragleave", (e) => { if (hasFiles(e)) { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropzone.classList.remove("is-over"); } });
+window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dropzone.classList.remove("is-over");
+  addFiles([...e.dataTransfer.files]);
+});
+
+function addFiles(files) {
+  const rejected = [];
+  for (const file of files) {
+    if (isVideoName(file.name)) {
+      if (items.some((i) => i.kind === "video" && i.file.name === file.name && i.file.size === file.size)) continue;
+      startUpload(file, "video");
+    } else if (isSubName(file.name)) {
+      const old = subtitle();
+      if (old) removeItem(old);
+      startUpload(file, "subtitle");
+    } else {
+      rejected.push(file.name);
+    }
+  }
+  if (rejected.length) {
+    const what = rejected.length === 1 ? `"${rejected[0]}"` : `${rejected.length} files`;
+    toast(`${what} skipped: only .mkv and .mp4 videos (and .srt, .ass or .ssa subtitles) work.`, "warn");
+  }
+  refresh();
+}
+
+function startUpload(file, kind) {
+  const item = {
+    key: ++keySeq, file, kind, status: "uploading", frac: 0, upload: null, error: null,
+    ctrl: new AbortController(), row: null,
+  };
+  item.row = buildRow(item);
+  items.push(item);
+  runUpload(item);
+}
+
+async function runUpload(item) {
+  item.status = "uploading";
+  item.frac = 0;
+  item.error = null;
+  item.ctrl = new AbortController();
+  item.row.update();
+  try {
+    item.upload = await uploadFile(item.file, (f) => { item.frac = f; item.row.update(); }, item.ctrl.signal);
+    item.status = "done";
+  } catch (err) {
+    if (err && err.name === "AbortError") return; // removed by the user
+    item.status = "error";
+    item.error = err.message || "Upload failed.";
+    toast(`${item.file.name}: ${item.error}`, "error");
+  }
+  item.row.update();
+  refresh();
+}
+
+function removeItem(item) {
+  item.ctrl.abort();
+  const i = items.indexOf(item);
+  if (i >= 0) items.splice(i, 1);
+  item.row.node.remove();
+  if (item.upload && item.upload.id) {
+    api(`/api/uploads/${encodeURIComponent(item.upload.id)}`, { method: "DELETE" }).catch(() => {});
+  }
+  refresh();
+}
+
+function buildRow(item) {
+  const bar = el("div", { class: "progress__bar" });
+  const progress = el("div", { class: "progress progress--sm", role: "progressbar", "aria-label": `Upload of ${item.file.name}`, "aria-valuemin": "0", "aria-valuemax": "100" }, bar);
+  const status = el("span", { class: "bold" });
+  const actions = el("span", { class: "row" });
+  const node = el(
+    "li",
+    { class: "upload-row" },
+    el("span", { class: "upload-row__name truncate", title: item.file.name, text: item.file.name }),
+    actions,
+    el(
+      "div",
+      { class: "upload-row__meta" },
+      el("span", { class: item.kind === "video" ? "chip chip--ink" : "chip chip--yellow", text: item.kind === "video" ? "VIDEO" : "SUBTITLES" }),
+      el("span", { class: "muted", text: fmtBytes(item.file.size) }),
+      status,
+    ),
+    progress,
+  );
+  const removeBtn = el("button", { type: "button", class: "btn btn--small btn--secondary", onClick: () => removeItem(item), "aria-label": `Remove ${item.file.name}`, text: "Remove" });
+  const retryBtn = el("button", { type: "button", class: "btn btn--small btn--primary", onClick: () => runUpload(item), "aria-label": `Retry ${item.file.name}`, text: "Retry" });
+  $("upload-list").appendChild(node);
+
+  return {
+    node,
+    update() {
+      const pct = Math.round(item.frac * 100);
+      bar.style.setProperty("--value", `${item.status === "done" ? 100 : pct}%`);
+      progress.setAttribute("aria-valuenow", String(item.status === "done" ? 100 : pct));
+      progress.classList.toggle("progress--done", item.status === "done");
+      node.classList.toggle("upload-row--done", item.status === "done");
+      node.classList.toggle("upload-row--error", item.status === "error");
+      progress.hidden = item.status === "error";
+      status.className = item.status === "error" ? "bold field__error" : "bold";
+      status.textContent =
+        item.status === "uploading" ? `Uploading… ${pct}%` : item.status === "done" ? "Ready" : `Failed: ${item.error}`;
+      actions.replaceChildren(...(item.status === "error" ? [retryBtn, removeBtn] : [removeBtn]));
+    },
+  };
+}
+
+function refresh() {
+  for (const i of items) i.row.update();
+  const vids = videos();
+  const sub = subtitle();
+  $("uploads-panel").hidden = items.length === 0;
+
+  // Extra subtitles only make sense for one video.
+  const multi = vids.length > 1;
+  subzone.setAttribute("aria-disabled", multi ? "true" : "false");
+  subzone.style.opacity = multi ? "0.55" : "";
+  $("sub-hint").textContent = multi
+    ? "Extra subtitles only work with a single video"
+    : "Optional .srt or .ass, if the video's own tracks aren't right";
+
+  const uploading = items.filter((i) => i.status === "uploading").length;
+  const okVideos = vids.filter((i) => i.status === "done");
+  const failed = items.filter((i) => i.status === "error").length;
+  const sort = okVideos.slice().sort((a, b) => naturalCompare(a.file.name, b.file.name));
+
+  const parts = [];
+  if (uploading) parts.push(`Uploading ${uploading} file${uploading === 1 ? "" : "s"}…`);
+  if (failed) parts.push(`${failed} failed and won't be included.`);
+  if (multi && sub) parts.push("The extra subtitle file is ignored when there are several videos.");
+  if (!vids.length && sub) parts.push("Add the video this subtitle file belongs to.");
+  $("next-note").textContent = parts.join(" ");
+  $("uploads-sub").textContent = `${okVideos.length} of ${vids.length} video${vids.length === 1 ? "" : "s"} ready`;
+
+  const btn = $("next-btn");
+  btn.disabled = uploading > 0 || sort.length === 0;
+  btn.textContent = sort.length > 1 ? `NEXT: SET UP ${sort.length} EPISODES →` : "NEXT: SET UP THE DUB →";
+  btn.onclick = () => {
+    const ids = sort.map((i) => i.upload.id);
+    let q = `uploads=${ids.map(encodeURIComponent).join(",")}`;
+    const subOk = sub && sub.status === "done" && ids.length === 1;
+    if (subOk) q += `&sub=${encodeURIComponent(sub.upload.id)}`;
+    window.location.href = `/setup?${q}`;
+  };
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (items.some((i) => i.status === "uploading")) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* =========================================================
+   Folder on disk
+   ========================================================= */
+
+$("folder-btn").addEventListener("click", async () => {
+  const btn = $("folder-btn");
+  const picked = await folderPicker({ title: "PICK A SEASON FOLDER" });
+  if (!picked) return;
+  btn.setAttribute("aria-busy", "true");
+  btn.disabled = true;
+  try {
+    const data = await api("/api/scan", { method: "POST", body: { path: picked } });
+    const paths = ((data && data.videos) || []).map((v) => v.path);
+    if (!paths.length) {
+      toast("No .mkv or .mp4 videos in that folder.", "warn");
+      return;
+    }
+    window.location.href = `/setup?${pathsQuery(paths)}`;
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.removeAttribute("aria-busy");
+    btn.disabled = false;
+  }
+});
+
+/* =========================================================
+   Machine check banner + qwen install
+   ========================================================= */
+
+const machine = $("machine");
+const install = { running: false, log: [], error: null, timer: null };
+let sysData = null;
+
+function renderMachineLoading() {
+  machine.replaceChildren(
+    el("div", { class: "banner banner--info" },
+      el("span", { class: "spinner", "aria-hidden": "true" }),
+      el("div", { class: "banner__body" },
+        el("span", { class: "banner__title", text: "Checking this machine…" }),
+        el("span", { class: "small", text: "The first check can take a few seconds." }),
+      )),
+  );
+}
+
+function renderMachineError(err) {
+  machine.replaceChildren(
+    el("div", { class: "banner banner--warn", role: "alert" },
+      el("div", { class: "banner__body" },
+        el("span", { class: "banner__title", text: "Couldn't check this machine" }),
+        el("span", { text: err.message }),
+      ),
+      el("div", { class: "banner__actions" },
+        el("button", { type: "button", class: "btn btn--small btn--secondary", onClick: loadSystem, text: "Try again" })),
+    ),
+  );
+}
+
+function renderMachine() {
+  if (!sysData) return;
+  const { system, recommendation: rec } = sysData;
+  const kind = rec.level === "great" ? "ok" : rec.level === "weak" ? "warn" : "info";
+  const bodyChildren = [el("span", { class: "banner__title", text: rec.headline })];
+  if (rec.warning) bodyChildren.push(el("span", { text: rec.warning }));
+  if (rec.notes && rec.notes.length) {
+    bodyChildren.push(el("ul", { class: "machine-notes" }, rec.notes.map((n) => el("li", { text: n }))));
+  }
+  const actions = [];
+  if (!system.qwen_installed) {
+    bodyChildren.push(el("span", { class: "small bold", text: "Qwen voices (the best quality) aren't installed yet. It's a one-time download of a few GB." }));
+    actions.push(
+      el("button", {
+        type: "button",
+        class: "btn btn--small btn--primary",
+        id: "install-btn",
+        disabled: install.running,
+        "aria-busy": install.running ? "true" : null,
+        onClick: startInstall,
+        text: install.running ? "Installing…" : install.error ? "Try install again" : "Install qwen",
+      }),
+    );
+  }
+  if (install.error) bodyChildren.push(el("span", { class: "field__error", role: "alert", text: install.error }));
+  if (install.log.length || install.running) {
+    const body = el("pre", { class: "log__body", tabindex: "0", "aria-label": "Qwen install log" });
+    const tail = install.log.slice(-8);
+    if (!tail.length) body.appendChild(el("span", { class: "log__empty", text: "Starting…" }));
+    for (const line of tail) body.appendChild(el("span", { class: "log__line", text: line }));
+    bodyChildren.push(el("div", { class: "log" }, el("span", { class: "log__title", text: "INSTALL LOG" }), body));
+  }
+  machine.replaceChildren(
+    el("div", { class: `banner banner--${kind}` },
+      el("div", { class: "banner__body" }, bodyChildren),
+      actions.length ? el("div", { class: "banner__actions" }, actions) : null,
+    ),
+  );
+}
+
+async function loadSystem() {
+  renderMachineLoading();
+  try {
+    sysData = await api("/api/system");
+    renderMachine();
+    // Resume the progress display if an install is already running (e.g. page reloaded).
+    api("/api/setup/qwen").then((s) => { if (s && s.installing && !install.running) { applyQwen(s); pollQwen(); } }).catch(() => {});
+  } catch (err) {
+    renderMachineError(err);
+  }
+}
+
+function applyQwen(s) {
+  install.running = Boolean(s.installing);
+  install.log = s.log || [];
+  install.error = s.error || null;
+}
+
+async function startInstall() {
+  install.running = true;
+  install.error = null;
+  install.log = [];
+  renderMachine();
+  try {
+    applyQwen(await api("/api/setup/qwen", { method: "POST" }));
+  } catch (err) {
+    install.running = false;
+    install.error = err.message;
+    renderMachine();
+    return;
+  }
+  renderMachine();
+  pollQwen();
+}
+
+function pollQwen() {
+  clearTimeout(install.timer);
+  install.timer = setTimeout(async () => {
+    try {
+      const s = await api("/api/setup/qwen");
+      applyQwen(s);
+      if (s.installing) {
+        renderMachine();
+        pollQwen();
+        return;
+      }
+      if (s.installed && !s.error) {
+        toast("Qwen voices are installed.", "ok");
+        try { sysData = await api("/api/system/recheck", { method: "POST" }); } catch { /* keep the old banner data */ }
+        if (sysData) sysData.system.qwen_installed = true;
+        install.log = [];
+      } else if (!install.error) {
+        install.error = "The install didn't finish. Check the log and try again.";
+      }
+      renderMachine();
+    } catch (err) {
+      // transient: keep polling unless the server says no
+      if (err instanceof ApiError && err.status === 0) pollQwen();
+      else { install.running = false; install.error = err.message; renderMachine(); }
+    }
+  }, 1500);
+}
+
+/* =========================================================
+   History
+   ========================================================= */
+
+async function openOutput(path, action, btn) {
+  btn.setAttribute("aria-busy", "true");
+  try {
+    await api("/api/open", { method: "POST", body: { path, action } });
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.removeAttribute("aria-busy");
+  }
+}
+
+function fmtWhen(ts) {
+  if (!Number.isFinite(Number(ts))) return "";
+  const d = new Date(Number(ts) * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderHistory(jobs) {
+  const box = $("history");
+  if (!jobs.length) {
+    box.replaceChildren(el("div", { class: "panel panel--dashed" }, el("p", { class: "bold", text: "Nothing dubbed yet. Your finished episodes will show up here." })));
+    return;
+  }
+  box.replaceChildren(
+    el("div", { class: "history-grid" },
+      jobs.map((job) => {
+        const out = job.output;
+        const playBtn = el("button", { type: "button", class: "btn btn--small btn--primary", text: "▶ Play", "aria-label": `Play ${job.name || "episode"}` });
+        const openBtn = el("button", { type: "button", class: "btn btn--small btn--secondary", text: "Open folder", "aria-label": `Open the folder of ${job.name || "episode"}` });
+        playBtn.addEventListener("click", () => openOutput(out, "play", playBtn));
+        openBtn.addEventListener("click", () => openOutput(out, "reveal", openBtn));
+        return el("article", { class: "card history-card" },
+          el("span", { class: "card__title", title: job.name || "", text: job.name || "Episode" }),
+          out ? el("code", { text: basename(out) }) : null,
+          el("span", { class: "small muted", text: [fmtWhen(job.finished_at), job.tts ? String(job.tts).toUpperCase() : ""].filter(Boolean).join(" · ") }),
+          out ? el("div", { class: "row" }, playBtn, openBtn) : null,
+        );
+      }),
+    ),
+  );
+}
+
+async function loadHistory() {
+  try {
+    const data = await api("/api/history");
+    renderHistory((data && data.jobs) || []);
+  } catch (err) {
+    $("history").replaceChildren(
+      el("div", { class: "banner banner--warn", role: "alert" },
+        el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: "Couldn't load your history" }), el("span", { text: err.message })),
+        el("div", { class: "banner__actions" }, el("button", { type: "button", class: "btn btn--small btn--secondary", onClick: loadHistory, text: "Try again" }))),
+    );
+  }
+}
+
+refresh();
+loadSystem();
+loadHistory();
+</script>
+</body>
+</html>

@@ -26,20 +26,19 @@ Requirements: ffmpeg/ffprobe on PATH, and Python **3.10–3.13** (PyTorch has no
 # macOS
 brew install ffmpeg python@3.13
 python3.13 -m venv .venv && .venv/bin/pip install -e .
-scripts/setup-tts.sh          # only for --tts turbo (default): makes .venv-tts, ~2 GB model on first run
+.venv/bin/senpaidub setup qwen   # only for --tts qwen (default): own venv + ~4.5 GB model
 ```
 
 - Linux: `apt install ffmpeg`. Windows: `winget install Gyan.FFmpeg`, then the same venv steps (`.venv\Scripts\...`).
 - NVIDIA GPU: install a CUDA build of PyTorch into `.venv` *before* `pip install -e .`.
-- Check: `.venv/bin/senpaidub --version`, plus `.venv-tts/bin/python -c "import chatterbox"` for turbo.
-- `.venv-tts` must sit in the repo root, or set `SENPAIDUB_CLONE_PYTHON` to a Python that has `chatterbox-tts`.
+- Check: `.venv/bin/senpaidub --version`. The qwen env is found at `$SENPAIDUB_QWEN_PYTHON`, then `.venv-qwen` in the repo root (`scripts/setup-tts.sh` makes it), then the one `senpaidub setup qwen` made in the app data folder.
 
 ## Choosing `--tts`
 
 | Engine | Pick it when | Time per 24-min episode | Notes |
 |---|---|---|---|
-| `turbo` (default) | the user wants the best result | ~20–25 min on an Apple M-series CPU, ~4 GB RAM | Clones each original voice and emotion; local; no API key |
-| `edge` | the user wants it fast, or turbo isn't installed | ~3–5 min | Free online Microsoft voices; male/female picked by pitch; needs internet |
+| `qwen` (default) | the user wants the best result and has a GPU (Apple Silicon or NVIDIA) | ~10 min on an Apple M5 GPU (measured, 399 lines); ~6 GB memory | Clones each original voice; local; no API key. Without a GPU it's several times slower: prefer edge |
+| `edge` | the user wants it fast, has no GPU, or qwen isn't installed | ~3–5 min | Free online Microsoft voices; male/female picked by pitch; needs internet |
 | `google` | the user has a Google Cloud API key | ~3–5 min | Chirp 3 HD voices; key in `GOOGLE_API_KEY` or a `google-api-key` file next to config.toml |
 
 Vocal separation (Demucs) runs for every engine and takes a few minutes per episode. It uses CUDA/MPS automatically.
@@ -54,6 +53,7 @@ senpaidub ep.mkv --sub-track 3                           # a specific subtitle s
 senpaidub ep.mkv --sub-file ep01.ass                     # external subtitles
 senpaidub ep.mkv --tts edge                              # fast voices
 senpaidub ep.mkv --force                                 # redo even if the output exists
+senpaidub serve                                          # local web UI on 127.0.0.1:7860 (the user drives it; `senpaidub setup qwen` installs qwen)
 ```
 
 **A whole season the user wants filed as a series:** loop over the files in episode order with `--series-name`. One `senpaidub` call per file keeps a single failure from stopping the rest:
@@ -62,7 +62,7 @@ senpaidub ep.mkv --force                                 # redo even if the outp
 for f in "/path/to/Show"/*.mkv; do senpaidub "$f" --series-name "Show" || echo "FAILED: $f"; done
 ```
 
-**Long runs** (turbo takes about 4–5 hours per season): run in the background and log to a file. Lower the priority so the machine stays usable. On macOS, keep it awake and remind the user to stay on the charger with the lid open:
+**Long runs** (qwen takes about 2–2.5 hours per season on an Apple Silicon GPU): run in the background and log to a file. Lower the priority so the machine stays usable. On macOS, keep it awake and remind the user to stay on the charger with the lid open:
 
 ```bash
 caffeinate -is nice -n 10 zsh -c 'for f in ...; do senpaidub "$f" --series-name "Show"; done' > dub.log 2>&1
@@ -117,11 +117,12 @@ Layout, all under `src/senpaidub/`:
 - `subtitles.py`: track choice and dialogue filtering.
 - `hardsubs.py` + `ocr_vision.swift`: burned-in subtitle OCR.
 - `separate.py`: Demucs.
-- `tts/`: engines. `clone.py` and `clone_worker.py` run Chatterbox in `.venv-tts`.
+- `tts/`: engines. `qwen.py` batches lines and `qwen_worker.py` runs Qwen3-TTS in its own venv on the GPU.
 - `timing.py`: fitting lines into their slots.
 - `levels.py`, `mix.py`: loudness and mixing.
 - `voicecheck.py`: male/female correction.
 - `mux.py`: final mkv.
 - `batch.py`, `stremio.py`: multi-episode modes.
+- `server/` (FastAPI: `app.py` routes, `security.py`, `jobs.py` queue + `worker.py` processes, `system.py`, `files.py`) and `ui/` (static HTML/JS, no build step): the `senpaidub serve` web UI. Progress reaches it through `report.py` reporters.
 
 Checks: run `.venv/bin/pytest -q` (offline; uses the `mock` TTS engine and synthetic ffmpeg videos) and `.venv/bin/ruff check src tests`. Both must pass. Add a test with each behaviour change.

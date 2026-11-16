@@ -141,7 +141,23 @@ def separate_stems(
             tails = None if last else [y[step:] for y in ys]
             if on_progress:
                 on_progress(min(start + step, n) / sr, n / sr)
+    _release(model, dev)
     return out_no_vocals, out_vocals
+
+
+def _release(model: object, dev: str) -> None:
+    """Hand Demucs's GPU memory back. The voice model runs right after this, and without it
+    the ~1.2 GB stayed cached in this process for the rest of the episode."""
+    import gc
+
+    import torch
+
+    del model
+    gc.collect()
+    if dev == "mps":
+        torch.mps.empty_cache()
+    elif dev == "cuda":
+        torch.cuda.empty_cache()
 
 
 # --------------------------------------------------------------------------- ducking

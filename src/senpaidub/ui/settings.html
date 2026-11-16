@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings — Senpai Dub</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="page">
+  <div id="header"></div>
+
+  <div id="page-error" class="banner banner--error" role="alert" hidden>
+    <span class="banner__icon" aria-hidden="true">!</span>
+    <div class="banner__body">
+      <span class="banner__title">Couldn't load the settings</span>
+      <span id="page-error-msg"></span>
+    </div>
+    <div class="banner__actions"><button type="button" class="btn btn--small btn--secondary" id="page-retry">Try again</button></div>
+  </div>
+
+  <section class="panel panel--burst panel--shadow panel--pad-lg" aria-labelledby="page-title">
+    <span class="sfx sfx--tr" lang="ja" aria-hidden="true">カチッ</span>
+    <div class="row row--between">
+      <div class="stack stack--tight">
+        <span class="tag">BACKSTAGE · 楽屋</span>
+        <h1 class="display display--lg" id="page-title">Settings</h1>
+        <p class="bold" style="max-width: 460px">Defaults for every new dub. The command-line tool reads the same <span class="mono">config.toml</span>, so a change here applies there too.</p>
+      </div>
+      <span class="mascot mascot--sm" id="hero-mascot"></span>
+    </div>
+  </section>
+
+  <div class="grid">
+    <!-- Defaults -->
+    <form id="settings-form" class="panel span-7 self-start" novalidate aria-labelledby="defaults-title">
+      <div class="panel-head">
+        <h2 class="panel-title" id="defaults-title">THE DEFAULTS</h2>
+        <span class="panel-sub">used when you start a dub</span>
+      </div>
+
+      <fieldset class="field">
+        <legend class="field__label">Voice engine</legend>
+        <div class="stack stack--tight" id="engine-options">
+          <label class="radio-card">
+            <input type="radio" name="tts" value="qwen">
+            <span class="radio-card__body">
+              <span class="radio-card__title radio-card__title--display">QWEN</span>
+              <span class="radio-card__meta" id="engine-meta-qwen">Local AI that copies each original voice. Runs on your GPU.</span>
+            </span>
+            <span class="row" id="engine-chips-qwen"></span>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="tts" value="edge">
+            <span class="radio-card__body">
+              <span class="radio-card__title radio-card__title--display">EDGE</span>
+              <span class="radio-card__meta" id="engine-meta-edge">Free online Microsoft voices. Fast; needs internet.</span>
+            </span>
+            <span class="row" id="engine-chips-edge"></span>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="tts" value="google">
+            <span class="radio-card__body">
+              <span class="radio-card__title radio-card__title--display">GOOGLE</span>
+              <span class="radio-card__meta" id="engine-meta-google">Google Chirp 3 HD voices. Fast; needs an API key.</span>
+            </span>
+            <span class="row" id="engine-chips-google"></span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label class="field__label" for="library">Library folder</label>
+        <div class="input-row">
+          <input class="input input--mono" id="library" name="library" type="text" autocomplete="off" spellcheck="false" aria-describedby="library-hint">
+          <button type="button" class="btn btn--secondary" id="library-browse">Browse…</button>
+        </div>
+        <span class="field__hint" id="library-hint">Each series gets its own folder in here, with the originals moved to <span class="mono">original/</span>.</span>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="keep_cache" name="keep_cache">
+        <span class="check__text">
+          <span>Keep caches after each episode</span>
+          <span class="field__hint">Makes re-runs faster but uses several GB of disk per episode.</span>
+        </span>
+      </label>
+
+      <details class="disclosure">
+        <summary>ADVANCED AUDIO</summary>
+        <div class="disclosure__body">
+          <div class="field-pair">
+            <div class="field">
+              <label class="field__label" for="duck_db">Music duck (dB)</label>
+              <input class="input" id="duck_db" name="duck_db" type="number" step="0.5" min="-40" max="0" inputmode="decimal" aria-describedby="duck-hint">
+              <span class="field__hint" id="duck-hint">How far the background drops under a line. −12 is the default; −40 to 0.</span>
+            </div>
+            <div class="field">
+              <label class="field__label" for="max_speedup">Max speed-up</label>
+              <input class="input" id="max_speedup" name="max_speedup" type="number" step="0.05" min="1" max="2" inputmode="decimal" aria-describedby="speed-hint">
+              <span class="field__hint" id="speed-hint">How much a long line may be sped up to fit its slot. 1.4 is the default; 1.0 to 2.0.</span>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <p class="field__error" id="form-error" role="alert" hidden></p>
+      <div class="row row--end">
+        <span class="small bold muted" id="form-status" aria-live="polite"></span>
+        <button type="submit" class="btn btn--primary" id="save-btn">SAVE SETTINGS</button>
+      </div>
+    </form>
+
+    <div class="stack span-5">
+      <!-- Google key -->
+      <section class="panel" aria-labelledby="google-title">
+        <div class="panel-head">
+          <h2 class="panel-title panel-title--sm" id="google-title">GOOGLE API KEY</h2>
+          <span class="chip" id="google-chip">—</span>
+        </div>
+        <p class="small" id="google-status">Checking…</p>
+        <form id="google-form" class="stack stack--tight" novalidate>
+          <label class="field__label" for="google-key">New key</label>
+          <div class="input-row">
+            <input class="input input--mono" id="google-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="google-hint">
+            <button type="submit" class="btn btn--ink" id="google-save">SAVE</button>
+          </div>
+          <span class="field__hint" id="google-hint">Saved to a private file next to config.toml. It's never shown in full again.</span>
+          <p class="field__error" id="google-error" role="alert" hidden></p>
+          <div class="row"><button type="button" class="btn btn--small btn--danger" id="google-remove" hidden>Remove saved key</button></div>
+        </form>
+      </section>
+
+      <!-- Qwen -->
+      <section class="panel panel--ink" aria-labelledby="qwen-title">
+        <div class="panel-head">
+          <h2 class="panel-title panel-title--sm" id="qwen-title">QWEN VOICES</h2>
+          <span class="chip" id="qwen-chip">—</span>
+        </div>
+        <p class="small" id="qwen-status" aria-live="polite">Checking…</p>
+        <p class="field__error" id="qwen-error" role="alert" hidden></p>
+        <div class="row">
+          <button type="button" class="btn btn--on-ink" id="qwen-install" hidden>INSTALL QWEN</button>
+        </div>
+        <div class="log log--light" id="qwen-log" hidden>
+          <span class="log__title">INSTALL LOG</span>
+          <pre class="log__body" id="qwen-log-body" tabindex="0" aria-label="Qwen install log"></pre>
+        </div>
+      </section>
+    </div>
+
+    <!-- Machine check -->
+    <section class="panel span-12" aria-labelledby="machine-title" aria-busy="true" id="machine-panel">
+      <div class="panel-head">
+        <h2 class="panel-title" id="machine-title">MACHINE CHECK</h2>
+        <button type="button" class="btn btn--small btn--secondary" id="recheck-btn">Re-run check</button>
+      </div>
+      <div id="machine-loading" class="row small bold"><span class="spinner" aria-hidden="true"></span> Checking this machine… the first check can take a few seconds.</div>
+      <p class="field__error" id="machine-error" role="alert" hidden></p>
+      <div id="machine-body" class="stack" hidden>
+        <div class="banner" id="rec-banner">
+          <div class="banner__body">
+            <span class="banner__title" id="rec-headline"></span>
+            <span id="rec-warning" hidden></span>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="span-7 stack stack--tight">
+            <h3 class="display display--sm">THIS MACHINE</h3>
+            <dl class="kv" id="sys-kv"></dl>
+          </div>
+          <div class="span-5 stack stack--tight">
+            <h3 class="display display--sm">SENPAI SUGGESTS</h3>
+            <dl class="kv" id="rec-kv"></dl>
+            <ul class="small" id="rec-notes" style="margin: 4px 0 0; padding-left: 18px"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script type="module">
+import { api, el, folderPicker, fmtDuration, mascot, renderHeader, setTitle, toast } from "/assets/app.js";
+
+const $ = (id) => document.getElementById(id);
+const ENGINES = ["qwen", "edge", "google"];
+
+renderHeader($("header"), { badge: "SETTINGS · 設定" });
+setTitle("Settings");
+$("hero-mascot").innerHTML = mascot("normal"); // static SVG from app.js
+
+const state = { settings: null, system: null, qwen: null };
+
+/* ---------------- settings form ---------------- */
+
+const form = $("settings-form");
+
+function fillForm(s) {
+  state.settings = s;
+  for (const input of form.querySelectorAll('input[name="tts"]')) input.checked = input.value === s.tts;
+  $("library").value = s.library || "";
+  $("keep_cache").checked = Boolean(s.keep_cache);
+  $("duck_db").value = s.duck_db ?? "";
+  $("max_speedup").value = s.max_speedup ?? "";
+  $("form-status").textContent = "";
+  renderGoogle(s);
+  renderEngines();
+}
+
+function readForm() {
+  const checked = form.querySelector('input[name="tts"]:checked');
+  return {
+    tts: checked ? checked.value : state.settings?.tts,
+    library: $("library").value.trim(),
+    keep_cache: $("keep_cache").checked,
+    duck_db: Number($("duck_db").value),
+    max_speedup: Number($("max_speedup").value),
+  };
+}
+
+function validate(values) {
+  const fields = { duck_db: [-40, 0, "Music duck must be between −40 and 0 dB."], max_speedup: [1, 2, "Max speed-up must be between 1.0 and 2.0."] };
+  for (const [key, [lo, hi, msg]] of Object.entries(fields)) {
+    const ok = $(key).value !== "" && Number.isFinite(values[key]) && values[key] >= lo && values[key] <= hi;
+    $(key).setAttribute("aria-invalid", ok ? "false" : "true");
+    if (!ok) {
+      form.querySelector("details").open = true;
+      return msg;
+    }
+  }
+  if (!values.library) return "Pick a library folder.";
+  return null;
+}
+
+form.addEventListener("input", () => {
+  $("form-status").textContent = "Unsaved changes";
+});
+form.addEventListener("change", () => {
+  $("form-status").textContent = "Unsaved changes";
+});
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const values = readForm();
+  const problem = validate(values);
+  $("form-error").hidden = !problem;
+  $("form-error").textContent = problem || "";
+  if (problem) return;
+  const btn = $("save-btn");
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  try {
+    fillForm(await api("/api/settings", { method: "PUT", body: values }));
+    $("form-status").textContent = "Saved";
+    toast("Settings saved.", "ok");
+  } catch (err) {
+    $("form-error").textContent = err.message;
+    $("form-error").hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+  }
+});
+
+$("library-browse").addEventListener("click", async () => {
+  const picked = await folderPicker({ start: $("library").value.trim() || null, title: "PICK THE LIBRARY FOLDER" });
+  if (picked) {
+    $("library").value = picked;
+    $("form-status").textContent = "Unsaved changes";
+  }
+  $("library-browse").focus();
+});
+
+/* ---------------- engine cards (recommendation + qwen state) ---------------- */
+
+function chip(text, kind) {
+  return el("span", { class: `chip${kind ? ` chip--${kind}` : ""}`, text });
+}
+
+function renderEngines() {
+  const rec = state.system?.recommendation;
+  const qwenInstalled = state.qwen ? state.qwen.installed : state.system?.system?.qwen_installed;
+  const mins = rec?.minutes_per_episode || {};
+  const blurbs = {
+    qwen: "Local AI that copies each original voice. Runs on your GPU.",
+    edge: "Free online Microsoft voices. Needs internet.",
+    google: "Google Chirp 3 HD voices. Needs an API key.",
+  };
+  for (const engine of ENGINES) {
+    const m = mins[engine];
+    let time = "";
+    if (rec) time = m === null || m === undefined ? " Too slow to recommend on this machine." : ` About ${Math.round(m)} min per episode here.`;
+    $(`engine-meta-${engine}`).textContent = blurbs[engine] + time;
+    const chips = [];
+    if (rec && rec.engine === engine) chips.push(chip("SUGGESTED", "ink"));
+    if (engine === "qwen" && qwenInstalled === false) chips.push(chip("NOT INSTALLED", "accent"));
+    if (engine === "google" && state.settings && !state.settings.google_key_set) chips.push(chip("NEEDS KEY", "outline"));
+    $(`engine-chips-${engine}`).replaceChildren(...chips);
+  }
+}
+
+/* ---------------- google key ---------------- */
+
+function renderGoogle(s) {
+  const set = Boolean(s.google_key_set);
+  const c = $("google-chip");
+  c.className = `chip ${set ? "chip--ok" : "chip--outline"}`;
+  c.textContent = set ? "SAVED" : "NOT SET";
+  $("google-status").textContent = set
+    ? `A key is saved${s.google_key_hint ? ` (ends in ${s.google_key_hint.replace(/^[.…]+/, "")})` : ""}. Paste a new one to replace it.`
+    : "No key saved. The google engine needs one; qwen and edge don't.";
+  $("google-remove").hidden = !set;
+}
+
+async function saveGoogleKey(value) {
+  const err = $("google-error");
+  err.hidden = true;
+  const buttons = [$("google-save"), $("google-remove")];
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const s = await api("/api/settings", { method: "PUT", body: { google_api_key: value } });
+    state.settings = { ...state.settings, google_key_set: s.google_key_set, google_key_hint: s.google_key_hint };
+    renderGoogle(state.settings);
+    renderEngines();
+    $("google-key").value = "";
+    toast(value ? "Google API key saved." : "Google API key removed.", "ok");
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+$("google-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const value = $("google-key").value.trim();
+  if (!value) {
+    $("google-error").textContent = "Paste a key first.";
+    $("google-error").hidden = false;
+    $("google-key").focus();
+    return;
+  }
+  saveGoogleKey(value);
+});
+
+$("google-remove").addEventListener("click", () => {
+  if (window.confirm("Remove the saved Google API key? The google engine will stop working until you add one again.")) {
+    saveGoogleKey("");
+  }
+});
+
+/* ---------------- qwen install ---------------- */
+
+let qwenTimer = null;
+let wasInstalling = false;
+
+function renderQwen(t) {
+  state.qwen = t;
+  const c = $("qwen-chip");
+  const status = $("qwen-status");
+  const btn = $("qwen-install");
+  if (t.installing) {
+    c.className = "chip chip--yellow";
+    c.replaceChildren(el("span", { class: "spinner", "aria-hidden": "true" }), "INSTALLING");
+    status.textContent = "Installing the local voice model (a few GB). This can take a while; you can leave this page and it keeps going.";
+    btn.hidden = false;
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.textContent = "INSTALLING…";
+  } else if (t.installed) {
+    c.className = "chip chip--ok";
+    c.textContent = "READY";
+    status.textContent = "Qwen is installed. It clones each original voice and runs on this machine's GPU, no internet needed.";
+    btn.hidden = true;
+  } else {
+    c.className = "chip chip--accent";
+    c.textContent = "NOT INSTALLED";
+    status.textContent = "Qwen gives the best voices. One click installs it (a few GB download). Edge works in the meantime.";
+    btn.hidden = false;
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+    btn.textContent = t.error ? "TRY AGAIN" : "INSTALL QWEN";
+  }
+  $("qwen-error").hidden = !t.error;
+  $("qwen-error").textContent = t.error ? `Install failed: ${t.error}` : "";
+
+  const lines = Array.isArray(t.log) ? t.log : [];
+  const logBox = $("qwen-log");
+  const body = $("qwen-log-body");
+  logBox.hidden = lines.length === 0;
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+  body.textContent = lines.join("\n");
+  if (atBottom) body.scrollTop = body.scrollHeight;
+
+  if (wasInstalling && !t.installing) {
+    if (t.installed) toast("Qwen is installed. Local voices are ready.", "ok");
+    else if (t.error) toast("The qwen install failed. See the log.", "error");
+    if (state.system?.system) state.system.system.qwen_installed = Boolean(t.installed);
+  }
+  wasInstalling = Boolean(t.installing);
+  renderEngines();
+  if (state.system) renderMachine(state.system);
+
+  clearTimeout(qwenTimer);
+  if (t.installing) qwenTimer = setTimeout(pollQwen, 1500);
+}
+
+async function pollQwen() {
+  try {
+    renderQwen(await api("/api/setup/qwen"));
+  } catch (err) {
+    $("qwen-error").textContent = err.message;
+    $("qwen-error").hidden = false;
+    if (wasInstalling) qwenTimer = setTimeout(pollQwen, 3000); // keep trying while an install runs
+  }
+}
+
+$("qwen-install").addEventListener("click", async () => {
+  const btn = $("qwen-install");
+  btn.disabled = true;
+  try {
+    const t = await api("/api/setup/qwen", { method: "POST" });
+    wasInstalling = wasInstalling || Boolean(t.installing);
+    renderQwen(t);
+  } catch (err) {
+    btn.disabled = false;
+    $("qwen-error").textContent = err.message;
+    $("qwen-error").hidden = false;
+  }
+});
+
+/* ---------------- machine check ---------------- */
+
+function gpuText(gpu) {
+  if (!gpu || gpu.kind === "none") return "None found (CPU only)";
+  if (gpu.kind === "cuda") return `NVIDIA ${gpu.name || "GPU"}${gpu.vram_gb ? ` · ${gpu.vram_gb} GB VRAM` : ""} (CUDA)`;
+  if (gpu.kind === "mps") return `${gpu.name || "Apple GPU"} (Metal)`;
+  return gpu.name || gpu.kind;
+}
+
+function kvRows(target, rows) {
+  target.replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
+}
+
+function renderMachine({ system: s, recommendation: r }) {
+  if (!s || !r) return;
+  const banner = $("rec-banner");
+  banner.className = `banner ${r.level === "great" ? "banner--ok" : r.level === "weak" ? "banner--warn" : "banner--info"}`;
+  $("rec-headline").textContent = r.headline || "";
+  $("rec-warning").hidden = !r.warning;
+  $("rec-warning").textContent = r.warning || "";
+
+  const disk = s.disk_free_gb || {};
+  kvRows($("sys-kv"), [
+    ["System", [s.os, s.os_version, s.arch && `(${s.arch})`].filter(Boolean).join(" ")],
+    ["CPU", `${s.cpu || "Unknown"} · ${s.cores ?? "?"} cores${s.apple_silicon ? " · Apple Silicon" : ""}`],
+    ["Memory", s.ram_gb != null ? `${s.ram_gb} GB` : "Unknown"],
+    ["GPU", gpuText(s.gpu)],
+    ["Free disk", `library ${disk.library ?? "?"} GB · cache ${disk.cache ?? "?"} GB`],
+    ["Internet", s.internet ? "Reachable" : "Not reachable (edge and google need it)"],
+    ["Qwen", s.qwen_installed ? "Installed" : "Not installed"],
+    ["Hardsub OCR", s.ocr_available ? "Available" : "Not on this system (add an .srt instead)"],
+  ]);
+
+  const mins = r.minutes_per_episode || {};
+  const m = (v) => (v === null || v === undefined ? "not recommended" : `~${fmtDuration(v * 60, { words: true })}`);
+  kvRows($("rec-kv"), [
+    ["Engine", (r.engine || "").toUpperCase()],
+    ["Episodes at once", String(r.parallel ?? 1)],
+    ["Qwen", `${m(mins.qwen)} per episode`],
+    ["Edge", `${m(mins.edge)} per episode`],
+    ["Google", `${m(mins.google)} per episode`],
+  ]);
+  $("rec-notes").replaceChildren(...(r.notes || []).map((n) => el("li", { text: n })));
+  $("rec-notes").hidden = !(r.notes || []).length;
+
+  $("machine-loading").hidden = true;
+  $("machine-body").hidden = false;
+  $("machine-panel").removeAttribute("aria-busy");
+}
+
+async function loadSystem(refresh = false) {
+  const btn = $("recheck-btn");
+  btn.disabled = true;
+  btn.setAttribute("aria-busy", "true");
+  $("machine-error").hidden = true;
+  if (refresh || !state.system) {
+    $("machine-loading").hidden = false;
+    $("machine-panel").setAttribute("aria-busy", "true");
+  }
+  try {
+    const data = await api(refresh ? "/api/system/recheck" : "/api/system", { method: refresh ? "POST" : "GET" });
+    state.system = data;
+    if (state.qwen && data.system) data.system.qwen_installed = data.system.qwen_installed || state.qwen.installed;
+    renderMachine(data);
+    renderEngines();
+    if (refresh) toast("Machine check updated.", "ok");
+  } catch (err) {
+    $("machine-loading").hidden = true;
+    $("machine-error").textContent = err.message;
+    $("machine-error").hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute("aria-busy");
+  }
+}
+
+$("recheck-btn").addEventListener("click", () => loadSystem(true));
+
+/* ---------------- start ---------------- */
+
+async function loadSettings() {
+  $("page-error").hidden = true;
+  try {
+    fillForm(await api("/api/settings"));
+  } catch (err) {
+    $("page-error-msg").textContent = err.message;
+    $("page-error").hidden = false;
+  }
+}
+
+$("page-retry").addEventListener("click", () => {
+  loadSettings();
+  pollQwen();
+  loadSystem(false);
+});
+
+loadSettings();
+pollQwen();
+loadSystem(false);
+</script>
+</body>
+</html>

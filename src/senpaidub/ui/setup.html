@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up the dub — Senpai Dub</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/flow.css">
+</head>
+<body>
+<div class="page">
+  <div id="header"></div>
+
+  <div class="row">
+    <a class="btn btn--small btn--secondary" href="/">← Change the video</a>
+  </div>
+
+  <!-- loading / error / empty -->
+  <div id="state" aria-live="polite"></div>
+
+  <div id="main" hidden>
+    <div class="grid">
+      <div id="left" class="stack span-7"></div>
+      <div id="right" class="stack span-5">
+        <section class="panel" id="engine-panel" aria-labelledby="engine-title">
+          <div class="panel-head">
+            <h2 class="panel-title" id="engine-title">THE VOICE</h2>
+            <span class="panel-sub">who reads the lines</span>
+          </div>
+          <fieldset class="field">
+            <legend class="visually-hidden">Voice engine</legend>
+            <div class="choice-grid" id="engine-grid"></div>
+          </fieldset>
+          <div class="banner banner--warn" id="engine-warning" role="status" hidden>
+            <div class="banner__body"><span id="engine-warning-text"></span></div>
+          </div>
+        </section>
+
+        <section class="panel" id="options-panel" aria-labelledby="options-title">
+          <div class="panel-head">
+            <h2 class="panel-title" id="options-title">THE FILING</h2>
+            <span class="panel-sub">optional</span>
+          </div>
+          <div class="field">
+            <label class="field__label" for="series">Series name</label>
+            <input class="input" id="series" type="text" autocomplete="off" maxlength="120" aria-describedby="series-hint" placeholder="e.g. World's End Harem">
+            <span class="field__hint" id="series-hint">Gives the show its own folder in your library. Leave empty to skip.</span>
+          </div>
+          <div class="field" id="parallel-field" hidden>
+            <label class="field__label" for="parallel">Episodes at once</label>
+            <select class="select" id="parallel" aria-describedby="parallel-hint"></select>
+            <span class="field__hint" id="parallel-hint"></span>
+            <span class="field__error" id="parallel-warning" role="status" hidden></span>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="force">
+            <span class="check__text">
+              <span>Redo episodes that already have a dub</span>
+              <span class="field__hint">Otherwise finished episodes are skipped.</span>
+            </span>
+          </label>
+          <div class="stack stack--tight">
+            <span class="field__label">Where it will go</span>
+            <p class="output-preview" id="output-preview"></p>
+          </div>
+        </section>
+
+        <div class="start-bar" id="start-bar">
+          <p class="field__error" id="start-error" role="alert" hidden></p>
+          <p class="small bold" id="start-note" aria-live="polite"></p>
+          <button type="button" class="btn btn--primary btn--big" id="start-btn" disabled>START DUBBING</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { api, ApiError, el, fmtBytes, fmtDuration, renderHeader, setTitle, toast, uploadFile } from "/assets/app.js";
+import { ENGINES, basename, fmtMinutes, mapLimit, naturalCompare, pathsQuery, readPaths, sanitizeName, stripExt } from "/assets/flow.js";
+
+const $ = (id) => document.getElementById(id);
+
+renderHeader($("header"), { badge: "SCENE 2 · SETUP" });
+setTitle("Set up the dub");
+
+const params = new URLSearchParams(window.location.search);
+const uploadIds = (params.get("uploads") || "").split(",").map((s) => s.trim()).filter(Boolean);
+const diskPaths = readPaths(params);
+let subUploadId = params.get("sub") || null; // extra subtitles (single video only)
+
+const state = {
+  sys: null,          // {system, recommendation} or null
+  sysError: null,
+  settings: null,
+  rows: [],           // {key, input:{upload_id?|path?}, name, preview, error, loading}
+  source: null,       // single mode: "track:<index>" | "file" | "ocr" | null
+  engine: null,
+  probing: 0,
+  starting: false,
+};
+const multi = uploadIds.length + diskPaths.length > 1;
+const fromUploads = uploadIds.length > 0;
+
+/* =========================================================
+   Page state banners
+   ========================================================= */
+
+function showState(node) {
+  $("state").replaceChildren(...(node ? [node] : []));
+}
+
+function loadingBanner(text) {
+  return el("div", { class: "banner banner--info" },
+    el("span", { class: "spinner", "aria-hidden": "true" }),
+    el("div", { class: "banner__body" }, el("span", { class: "banner__title", text })));
+}
+
+function errorBanner(title, msg, onRetry) {
+  return el("div", { class: "banner banner--error", role: "alert" },
+    el("span", { class: "banner__icon", "aria-hidden": "true", text: "!" }),
+    el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: title }), el("span", { text: msg })),
+    onRetry ? el("div", { class: "banner__actions" }, el("button", { type: "button", class: "btn btn--small btn--secondary", onClick: onRetry, text: "Try again" })) : null);
+}
+
+/* =========================================================
+   Helpers
+   ========================================================= */
+
+function langName(code) {
+  if (!code) return "Unknown language";
+  try {
+    const n = new Intl.DisplayNames(["en"], { type: "language" }).of(code);
+    if (n && n !== code) return n;
+  } catch { /* fall through */ }
+  return String(code).toUpperCase();
+}
+
+function trackTitle(t) {
+  const title = t.title ? ` “${t.title}”` : " · no title";
+  return `Track ${t.index} · ${langName(t.language)} · ${String(t.codec || "?").toUpperCase()}${title}`;
+}
+
+function plural(n, word) { return `${n} ${word}${n === 1 ? "" : "s"}`; }
+
+function inputOf(row) { return row.input.upload_id ? { upload_id: row.input.upload_id } : { path: row.input.path }; }
+
+function usable(preview) {
+  if (!preview) return false;
+  if (preview.auto_source === "track" || preview.auto_source === "sub_file") return true;
+  if (preview.auto_source === "ocr") return Boolean(preview.ocr_available);
+  return false;
+}
+
+function probeBody(row, sub) {
+  const body = { ...inputOf(row) };
+  if (sub) body.sub_upload_id = sub;
+  return body;
+}
+
+/* =========================================================
+   Probing
+   ========================================================= */
+
+async function probeRow(row, sub) {
+  row.loading = true;
+  row.error = null;
+  state.probing++;
+  try {
+    row.preview = await api("/api/probe", { method: "POST", body: probeBody(row, sub) });
+    if (row.preview.name) row.name = row.preview.name;
+  } catch (err) {
+    row.preview = null;
+    row.error = err.message;
+  } finally {
+    row.loading = false;
+    state.probing--;
+  }
+}
+
+/* =========================================================
+   Single video: the script panel
+   ========================================================= */
+
+function defaultSource(p) {
+  if (p.auto_source === "sub_file" && p.sub_file && !p.sub_file.error) return "file";
+  if (p.auto_source === "ocr" && p.ocr_available) return "ocr";
+  const chosen = (p.subtitles || []).find((t) => t.chosen && t.is_text && !t.error);
+  if (chosen) return `track:${chosen.index}`;
+  if (p.sub_file && !p.sub_file.error) return "file";
+  const firstText = (p.subtitles || []).find((t) => t.is_text && !t.error);
+  if (firstText) return `track:${firstText.index}`;
+  if (p.needs_ocr && p.ocr_available) return "ocr";
+  return null;
+}
+
+function sourceCard({ value, title, meta, chips = [], disabled = false, dashed = false, extra = null }) {
+  const input = el("input", { type: "radio", name: "source", value, checked: state.source === value, disabled });
+  input.addEventListener("change", () => { state.source = value; updateStart(); });
+  return el("label", { class: `radio-card${dashed ? " radio-card--dashed" : ""}` },
+    input,
+    el("span", { class: "radio-card__body" },
+      el("span", { class: "radio-card__title", text: title }),
+      meta ? el("span", { class: "radio-card__meta", text: meta }) : null,
+      extra),
+    chips.length ? el("span", { class: "row" }, chips) : null);
+}
+
+async function addExtraFile(file) {
+  const row = state.rows[0];
+  const btn = $("extra-btn");
+  if (btn) { btn.setAttribute("aria-busy", "true"); btn.disabled = true; }
+  try {
+    const up = await uploadFile(file, () => {});
+    const old = subUploadId;
+    subUploadId = up.id;
+    if (old) api(`/api/uploads/${encodeURIComponent(old)}`, { method: "DELETE" }).catch(() => {});
+    await probeRow(row, subUploadId);
+    if (row.error) throw new ApiError(row.error);
+    if (row.preview.sub_file && !row.preview.sub_file.error) state.source = "file";
+    renderSingle();
+    updateStart();
+  } catch (err) {
+    toast(err.message, "error");
+    if (row.preview) renderSingle();
+  } finally {
+    const b = $("extra-btn");
+    if (b) { b.removeAttribute("aria-busy"); b.disabled = false; }
+  }
+}
+
+function renderSingle() {
+  const row = state.rows[0];
+  const p = row.preview;
+  const left = $("left");
+  const metaBits = [
+    p.duration ? fmtDuration(p.duration) : null,
+    p.resolution || null,
+    fmtBytes(p.size),
+    plural((p.subtitles || []).length, "subtitle track"),
+  ].filter(Boolean);
+
+  const head = el("section", { class: "panel panel--yellow panel--shadow", "aria-label": "The video" },
+    el("div", { class: "video-head" },
+      el("div", { class: "stack stack--tight" },
+        el("span", { class: "tag" }, "SCENE 2 · SETUP"),
+        el("h1", { class: "video-head__name", text: p.name || row.name }),
+        el("span", { class: "bold", text: metaBits.join(" · ") })),
+      el("a", { class: "btn btn--small btn--secondary", href: "/", text: "Change video" })));
+
+  const cards = [];
+  for (const t of p.subtitles || []) {
+    const bad = !t.is_text || Boolean(t.error);
+    let meta;
+    if (!t.is_text) meta = t.error || "Image subtitles aren't supported.";
+    else if (t.error) meta = t.error;
+    else meta = `${plural(t.lines ?? 0, "line")} to voice · ${t.skipped ?? 0} filtered out (signs, songs, notes)`;
+    cards.push(sourceCard({
+      value: `track:${t.index}`,
+      title: trackTitle(t),
+      meta,
+      disabled: bad,
+      chips: t.chosen && !bad ? [el("span", { class: "chip chip--ink", text: "DEFAULT" })] : [],
+    }));
+  }
+  if (!cards.length) {
+    cards.push(el("p", { class: "small bold", text: p.ocr_available ? "This video has no subtitle tracks. Senpai can read burned-in subtitles off the picture, or you can add a file." : "This video has no subtitle tracks. Add an .srt or .ass file." }));
+  }
+
+  // Extra file
+  const fileInput = el("input", { class: "visually-hidden", type: "file", accept: ".srt,.ass,.ssa", tabindex: "-1", "aria-hidden": "true" });
+  fileInput.addEventListener("change", () => { if (fileInput.files[0]) addExtraFile(fileInput.files[0]); });
+  const pickBtn = el("button", { type: "button", class: "btn btn--small btn--secondary", id: "extra-btn", text: p.sub_file ? "Replace file" : "Add .srt or .ass", onClick: () => { fileInput.value = ""; fileInput.click(); } });
+  if (p.sub_file) {
+    const sf = p.sub_file;
+    cards.push(sourceCard({
+      value: "file",
+      title: `Extra file · ${sf.name}`,
+      meta: sf.error ? sf.error : `${plural(sf.lines ?? 0, "line")} to voice · ${sf.skipped ?? 0} filtered out`,
+      disabled: Boolean(sf.error),
+      dashed: true,
+      chips: p.auto_source === "sub_file" && !sf.error ? [el("span", { class: "chip chip--ink", text: "DEFAULT" })] : [],
+    }));
+  } else {
+    cards.push(el("div", { class: "radio-card radio-card--dashed is-disabled" },
+      el("span", { class: "radio-card__body" },
+        el("span", { class: "radio-card__title", text: "Extra file · none yet" }),
+        el("span", { class: "radio-card__meta", text: "Add .srt or .ass if the video's own tracks aren't right" })),
+      el("span", { class: "chip chip--ink", text: "OPTIONAL" })));
+  }
+
+  // OCR
+  const ocrOk = Boolean(p.ocr_available);
+  cards.push(sourceCard({
+    value: "ocr",
+    title: "Read burned-in subtitles (OCR)",
+    meta: ocrOk ? "For videos with hardsubs and no text track. Slower: it reads the picture." : "Not available on this computer. Reading burned-in subtitles needs macOS with the Xcode command-line tools; elsewhere, add an .srt or .ass file.",
+    disabled: !ocrOk,
+    dashed: true,
+    chips: p.needs_ocr && ocrOk ? [el("span", { class: "chip chip--ink", text: "DEFAULT" })] : [],
+  }));
+
+  const script = el("section", { class: "panel", "aria-labelledby": "script-title" },
+    el("div", { class: "panel-head" },
+      el("h2", { class: "panel-title", id: "script-title", text: "THE SCRIPT" }),
+      el("span", { class: "panel-sub", text: "which subtitles to voice" })),
+    el("fieldset", { class: "field" },
+      el("legend", { class: "visually-hidden", text: "Subtitle source" }),
+      el("div", { class: "stack stack--tight" }, cards)),
+    el("div", { class: "row" }, pickBtn, fileInput),
+    p.encrypted ? el("div", { class: "banner banner--warn", role: "alert" }, el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: "This video looks encrypted" }), el("span", { text: "Senpai may not be able to read it." }))) : null,
+    state.source === null ? el("div", { class: "banner banner--warn", role: "alert" }, el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: "No usable subtitles" }), el("span", { text: "Add an .srt or .ass file to continue." }))) : null,
+  );
+  left.replaceChildren(head, script);
+}
+
+/* =========================================================
+   Several videos: the table
+   ========================================================= */
+
+function sourceText(row) {
+  const p = row.preview;
+  if (row.loading) return { text: "Reading…", cls: "muted" };
+  if (row.error) return { text: row.error, cls: "cell-error" };
+  if (!p) return { text: "—", cls: "muted" };
+  if (p.auto_source === "track") {
+    const t = (p.subtitles || []).find((s) => s.chosen) || (p.subtitles || []).find((s) => s.is_text);
+    return { text: t ? `Track ${t.index} · ${langName(t.language)} · ${plural(t.lines ?? 0, "line")}` : "Subtitle track", cls: "" };
+  }
+  if (p.auto_source === "sub_file") return { text: `Subtitle file · ${plural(p.sub_file?.lines ?? 0, "line")}`, cls: "" };
+  if (p.auto_source === "ocr") {
+    return p.ocr_available
+      ? { text: "Burned-in subtitles (OCR)", cls: "" }
+      : { text: "Burned-in subtitles, but OCR isn't available here", cls: "cell-error" };
+  }
+  return { text: "No usable subtitles", cls: "cell-error" };
+}
+
+function removeRow(row) {
+  state.rows = state.rows.filter((r) => r !== row);
+  if (state.rows.length === 1) {
+    // Reload as a single video: rewrite the query to just the remaining item first, or the
+    // reload would bring every removed episode back.
+    const left = state.rows[0].input;
+    const q = left.upload_id ? `uploads=${encodeURIComponent(left.upload_id)}` : pathsQuery([left.path]);
+    window.location.replace(`${window.location.pathname}?${q}`);
+    return;
+  }
+  renderTable();
+  updateStart();
+}
+
+function renderTable() {
+  const tbody = el("tbody", {});
+  state.rows.forEach((row, i) => {
+    const src = sourceText(row);
+    const p = row.preview;
+    const actions = [];
+    if (row.error && !row.loading) {
+      actions.push(el("button", { type: "button", class: "btn btn--small btn--secondary", text: "Retry", "aria-label": `Retry ${row.name}`, onClick: async () => { await probeRow(row, null); renderTable(); updateStart(); } }));
+    }
+    actions.push(el("button", { type: "button", class: "btn btn--small btn--secondary", text: "Remove", "aria-label": `Remove ${row.name}`, onClick: () => removeRow(row) }));
+    tbody.appendChild(el("tr", {},
+      el("td", { class: "num muted", text: String(i + 1) }),
+      el("td", { class: "cell-name", text: row.name }),
+      el("td", { class: "num", text: p && p.duration ? fmtDuration(p.duration) : "—" }),
+      el("td", { class: src.cls, text: src.text }),
+      el("td", {}, el("div", { class: "row" }, actions))));
+  });
+  const ok = state.rows.filter((r) => usable(r.preview)).length;
+  const table = el("div", { class: "table-wrap" },
+    el("table", { class: "table" },
+      el("caption", { class: "visually-hidden", text: "Episodes to dub" }),
+      el("thead", {}, el("tr", {},
+        el("th", { class: "num", scope: "col", text: "#" }),
+        el("th", { scope: "col", text: "Episode" }),
+        el("th", { class: "num", scope: "col", text: "Length" }),
+        el("th", { scope: "col", text: "Subtitles" }),
+        el("th", { scope: "col" }, el("span", { class: "visually-hidden", text: "Actions" })))),
+      tbody));
+  $("left").replaceChildren(
+    el("section", { class: "panel panel--yellow panel--shadow", "aria-label": "Episodes" },
+      el("div", { class: "stack stack--tight" },
+        el("span", { class: "tag" }, "SCENE 2 · SETUP"),
+        el("h1", { class: "video-head__name", text: `${state.rows.length} episodes` }),
+        el("span", { class: "bold", text: state.probing ? `Reading the subtitles… (${state.rows.length - state.probing} of ${state.rows.length} done)` : `${ok} ready to dub` }))),
+    el("section", { class: "panel", "aria-labelledby": "eps-title" },
+      el("div", { class: "panel-head" },
+        el("h2", { class: "panel-title", id: "eps-title", text: "THE CAST" }),
+        el("span", { class: "panel-sub", text: "in episode order" })),
+      table));
+}
+
+/* =========================================================
+   Engines
+   ========================================================= */
+
+function engineStatus(key) {
+  const sys = state.sys && state.sys.system;
+  const rec = state.sys && state.sys.recommendation;
+  const settings = state.settings;
+  const chips = [];
+  let disabled = false;
+  let note = null;
+  if (key === "qwen" && sys && !sys.qwen_installed) {
+    disabled = true;
+    chips.push(el("span", { class: "chip chip--outline", text: "NOT INSTALLED" }));
+    note = el("a", { href: "/settings", class: "small bold", text: "Install qwen →" });
+  }
+  if (key === "google" && settings && !settings.google_key_set) {
+    disabled = true;
+    chips.push(el("span", { class: "chip chip--outline", text: "NEEDS KEY" }));
+    note = el("a", { href: "/settings", class: "small bold", text: "Add a key →" });
+  }
+  if (rec && rec.engine === key && !disabled) chips.unshift(el("span", { class: "chip chip--ink", text: "SUGGESTED" }));
+  if (key === "edge" && sys && sys.internet === false) chips.push(el("span", { class: "chip chip--accent", text: "OFFLINE" }));
+  return { disabled, chips, note };
+}
+
+function pickDefaultEngine() {
+  const order = [];
+  if (state.settings && ENGINES[state.settings.tts]) order.push(state.settings.tts);
+  if (state.sys) order.push(state.sys.recommendation.engine);
+  order.push("edge", "qwen", "google");
+  return order.find((k) => !engineStatus(k).disabled) || "edge";
+}
+
+function renderEngines() {
+  const rec = state.sys && state.sys.recommendation;
+  const grid = $("engine-grid");
+  const cards = Object.keys(ENGINES).map((key) => {
+    const { disabled, chips, note } = engineStatus(key);
+    const minutes = rec ? rec.minutes_per_episode[key] : null;
+    const meta = rec
+      ? (minutes === null || minutes === undefined ? "Too slow on this machine" : `${fmtMinutes(minutes)} per episode`)
+      : ENGINES[key].blurb;
+    const input = el("input", { type: "radio", name: "tts", value: key, checked: state.engine === key, disabled });
+    input.addEventListener("change", () => { state.engine = key; updateEngineWarning(); updateStart(); });
+    return el("label", { class: "radio-card engine-btn" },
+      input,
+      el("span", { class: "radio-card__body" },
+        el("span", { class: "radio-card__title radio-card__title--display", text: ENGINES[key].label }),
+        el("span", { class: "radio-card__meta", text: meta }),
+        el("span", { class: "radio-card__meta", text: rec ? ENGINES[key].blurb : "" }),
+        note),
+      chips.length ? el("span", { class: "row" }, chips) : null);
+  });
+  grid.replaceChildren(...cards);
+  updateEngineWarning();
+}
+
+function updateEngineWarning() {
+  const rec = state.sys && state.sys.recommendation;
+  const box = $("engine-warning");
+  let text = null;
+  if (rec && state.engine) {
+    const mins = rec.minutes_per_episode[state.engine];
+    const recMins = rec.minutes_per_episode[rec.engine];
+    if (state.engine !== rec.engine && mins !== null && mins !== undefined && recMins !== null && mins > recMins * 1.5) {
+      text = `${ENGINES[state.engine].label} will be slow on this machine: ${fmtMinutes(mins)} per episode, against ${fmtMinutes(recMins)} with ${ENGINES[rec.engine].label}.`;
+      if (rec.warning) text += ` ${rec.warning}`;
+    } else if ((mins === null || mins === undefined) && state.engine === "qwen") {
+      text = "This machine is too weak to recommend qwen (it needs a GPU). It will work, but very slowly. Edge or Google are much faster.";
+    }
+  }
+  box.hidden = !text;
+  $("engine-warning-text").textContent = text || "";
+}
+
+/* =========================================================
+   Options, preview, start
+   ========================================================= */
+
+function sepOf(path) { return /\\/.test(path || "") && !/\//.test(path || "") ? "\\" : "/"; }
+
+function updateOutput() {
+  const lib = state.settings && state.settings.library;
+  const series = sanitizeName($("series").value);
+  const first = state.rows[0];
+  const base = stripExt(first ? (first.preview ? first.preview.name : first.name) : "episode");
+  const file = multi ? "<episode> [EN dub].mkv" : `${base} [EN dub].mkv`;
+  const sep = sepOf(lib);
+  let text;
+  if (series) {
+    text = lib ? `${lib}${sep}${series}${sep}${file}` : `<your library>/${series}/${file}`;
+    if (!fromUploads) text += `  (originals move to ${series}/original/)`;
+  } else if (fromUploads) {
+    text = lib ? `${lib}${sep}Unsorted${sep}${file}` : `<your library>/Unsorted/${file}`;
+  } else {
+    const dir = first && first.input.path ? first.input.path.slice(0, Math.max(0, first.input.path.length - basename(first.input.path).length)) : "";
+    text = `${dir || "Next to the original: "}${file}`;
+  }
+  $("output-preview").textContent = text;
+}
+
+function setupParallel() {
+  const rec = state.sys && state.sys.recommendation;
+  const recPar = rec ? Math.max(1, rec.parallel) : 1;
+  const max = Math.max(4, recPar);
+  const sel = $("parallel");
+  sel.replaceChildren(...Array.from({ length: max }, (_, i) => el("option", { value: String(i + 1), text: String(i + 1), selected: i + 1 === recPar })));
+  $("parallel-hint").textContent = rec
+    ? `This machine is best at ${recPar}. Running more only helps on an NVIDIA graphics card.`
+    : "Running more than one only helps on an NVIDIA graphics card.";
+  $("parallel-field").hidden = !multi;
+  sel.onchange = updateParallelWarning;
+  updateParallelWarning();
+}
+
+function updateParallelWarning() {
+  const rec = state.sys && state.sys.recommendation;
+  const n = Number($("parallel").value) || 1;
+  const w = $("parallel-warning");
+  const over = rec && n > Math.max(1, rec.parallel);
+  w.hidden = !over;
+  w.textContent = over ? `More than ${Math.max(1, rec.parallel)} at once will compete for the same processor and memory, so every episode will finish later.` : "";
+  updateStart();
+}
+
+function readyItems() {
+  if (!multi) {
+    const row = state.rows[0];
+    if (!row || !row.preview || !state.source) return [];
+    const item = { ...inputOf(row) };
+    if (state.source === "file") {
+      if (subUploadId) item.sub_upload_id = subUploadId;
+    } else if (state.source === "ocr") {
+      item.use_ocr = true;
+    } else if (state.source.startsWith("track:")) {
+      item.sub_track = Number(state.source.slice(6));
+    }
+    return [item];
+  }
+  return state.rows.filter((r) => usable(r.preview)).map((r) => {
+    const item = { ...inputOf(r) };
+    if (r.preview.auto_source === "ocr") item.use_ocr = true;
+    return item;
+  });
+}
+
+function updateStart() {
+  const btn = $("start-btn");
+  const items = readyItems();
+  const notes = [];
+  let disabled = state.starting || items.length === 0 || !state.engine || state.probing > 0;
+  if (state.probing) notes.push("Still reading the videos…");
+  if (multi) {
+    const skipped = state.rows.length - items.length;
+    if (!state.probing && skipped) notes.push(`${plural(skipped, "episode")} can't be dubbed (no usable subtitles or unreadable) and will be left out.`);
+    const rec = state.sys && state.sys.recommendation;
+    const per = rec && state.engine ? rec.minutes_per_episode[state.engine] : null;
+    const par = Number($("parallel").value) || 1;
+    if (!state.probing && per && items.length) {
+      const eff = rec && rec.level && state.sys.system.gpu && state.sys.system.gpu.kind === "cuda" ? par : 1;
+      notes.push(`Roughly ${fmtDuration(per * 60 * items.length / eff, { words: true })} in total at this speed.`);
+    }
+  }
+  if (!multi && !state.probing && state.rows[0] && state.rows[0].preview && !state.source) notes.push("Pick a subtitle source first.");
+  $("start-note").textContent = notes.join(" ");
+  btn.disabled = disabled;
+  btn.textContent = state.starting ? "STARTING…" : multi ? `START DUBBING ${items.length || ""} EPISODES`.replace("  ", " ") : "START DUBBING";
+  if (state.starting) btn.setAttribute("aria-busy", "true"); else btn.removeAttribute("aria-busy");
+  updateOutput();
+}
+
+async function start() {
+  const err = $("start-error");
+  err.hidden = true;
+  const items = readyItems();
+  if (!items.length || !state.engine) return;
+  const body = { items, tts: state.engine, force: $("force").checked };
+  const series = $("series").value.trim();
+  if (series) body.series_name = series;
+  if (multi) body.parallel = Number($("parallel").value) || 1;
+  state.starting = true;
+  updateStart();
+  try {
+    const batch = await api("/api/batches", { method: "POST", body });
+    const jobs = batch.jobs || [];
+    window.location.href = jobs.length === 1 ? `/job?id=${encodeURIComponent(jobs[0].id)}` : `/batch?id=${encodeURIComponent(batch.id)}`;
+  } catch (e) {
+    state.starting = false;
+    err.textContent = e.message;
+    err.hidden = false;
+    toast(e.message, "error");
+    updateStart();
+  }
+}
+
+$("start-btn").addEventListener("click", start);
+$("series").addEventListener("input", updateOutput);
+$("force").addEventListener("change", updateStart);
+$("series").addEventListener("keydown", (e) => { if (e.key === "Enter" && !$("start-btn").disabled) { e.preventDefault(); start(); } });
+
+/* =========================================================
+   Boot
+   ========================================================= */
+
+async function loadMeta() {
+  const [sys, settings] = await Promise.allSettled([api("/api/system"), api("/api/settings")]);
+  state.sys = sys.status === "fulfilled" ? sys.value : null;
+  state.sysError = sys.status === "rejected" ? sys.reason.message : null;
+  state.settings = settings.status === "fulfilled" ? settings.value : null;
+}
+
+async function boot() {
+  if (!uploadIds.length && !diskPaths.length) {
+    showState(el("div", { class: "panel panel--dashed stack" },
+      el("h1", { class: "panel-title", text: "Nothing to set up yet" }),
+      el("p", { class: "bold", text: "Drop an episode or pick a folder first." }),
+      el("div", { class: "row" }, el("a", { class: "btn btn--primary", href: "/", text: "Back to the drop zone" }))));
+    return;
+  }
+
+  state.rows = [
+    ...uploadIds.map((id, i) => ({ key: `u${i}`, input: { upload_id: id }, name: `Episode ${i + 1}`, preview: null, error: null, loading: true })),
+    ...diskPaths.slice().sort((a, b) => naturalCompare(basename(a), basename(b))).map((p, i) => ({ key: `p${i}`, input: { path: p }, name: basename(p), preview: null, error: null, loading: true })),
+  ];
+
+  showState(loadingBanner(multi ? "Reading your episodes…" : "Reading the video…"));
+  const metaPromise = loadMeta();
+
+  if (!multi) {
+    const row = state.rows[0];
+    await probeRow(row, subUploadId);
+    await metaPromise;
+    if (row.error) {
+      showState(errorBanner("Couldn't read that video", row.error, () => window.location.reload()));
+      return;
+    }
+    state.source = defaultSource(row.preview);
+    if (!row.preview.sub_file && subUploadId) subUploadId = null;
+    setTitle(row.preview.name || "Set up the dub");
+    $("main").hidden = false;
+    showState(state.sysError ? el("div", { class: "banner banner--warn" }, el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: "Couldn't check this machine" }), el("span", { text: `${state.sysError} Engine suggestions are unavailable.` }))) : null);
+    state.engine = pickDefaultEngine();
+    renderSingle();
+    renderEngines();
+    setupParallel();
+    updateStart();
+    return;
+  }
+
+  // Several videos: show the table right away, probe 3 at a time.
+  await metaPromise;
+  $("main").hidden = false;
+  $("left").className = "stack span-12";
+  $("right").className = "grid span-12";
+  $("engine-panel").classList.add("span-7");
+  $("options-panel").classList.add("span-5");
+  $("options-panel").classList.add("stack");
+  $("start-bar").classList.add("span-12");
+  showState(state.sysError ? el("div", { class: "banner banner--warn" }, el("div", { class: "banner__body" }, el("span", { class: "banner__title", text: "Couldn't check this machine" }), el("span", { text: `${state.sysError} Engine suggestions are unavailable.` }))) : null);
+  state.engine = pickDefaultEngine();
+  setTitle(`${state.rows.length} episodes`);
+  renderTable();
+  renderEngines();
+  setupParallel();
+  updateStart();
+
+  let sinceRender = 0;
+  await mapLimit(state.rows, 3, async (row) => {
+    await probeRow(row, null);
+    if (++sinceRender >= 1) { renderTable(); updateStart(); }
+  });
+  // Natural order by the real file names once they're all known.
+  state.rows.sort((a, b) => naturalCompare(a.name, b.name));
+  renderTable();
+  updateStart();
+}
+
+boot();
+</script>
+</body>
+</html>

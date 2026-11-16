@@ -37,11 +37,15 @@ dependencies = [
     "tomli-w>=1",
     "pyyaml>=6",
     "demucs>=4.0.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
 google = ["google-cloud-texttospeech>=2.14"]
-dev = ["pytest>=8", "ruff>=0.5"]
+dev = ["pytest>=8", "ruff>=0.5", "httpx>=0.27"]
 
 [project.urls]
 Homepage = "https://github.com/<you>/senpaidub"
@@ -52,6 +56,9 @@ senpaidub = "senpaidub.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/senpaidub"]
+# Non-Python files inside the package (ui/*.html, ui/assets/*, ocr_vision.swift) ship automatically;
+# listed here so a future .gitignore change can't silently drop them from the wheel.
+artifacts = ["src/senpaidub/ui/**", "src/senpaidub/ocr_vision.swift"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

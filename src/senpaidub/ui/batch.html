@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batch — Senpai Dub</title>
+<link rel="stylesheet" href="/assets/style.css">
+<link rel="stylesheet" href="/assets/run.css">
+</head>
+<body>
+<div class="page">
+  <div id="header"></div>
+
+  <div id="page-error" class="banner banner--error" role="alert" hidden>
+    <span class="banner__icon" aria-hidden="true">!</span>
+    <div class="banner__body">
+      <span class="banner__title">Couldn't load this batch</span>
+      <span id="page-error-msg"></span>
+    </div>
+    <div class="banner__actions"><button type="button" class="btn btn--small btn--secondary" id="page-retry">Try again</button></div>
+  </div>
+
+  <main id="main" class="stack stack--loose" aria-busy="true">
+    <p class="muted">Loading…</p>
+  </main>
+  <p class="visually-hidden" id="sr-status" aria-live="polite" role="status"></p>
+</div>
+
+<script type="module">
+import { api, events, setTitle, fmtDuration, renderHeader, mascot, toast, el } from "/assets/app.js";
+import { coalesce, openPath, pct, statusChip, stageMeta } from "/assets/run.js";
+
+const id = new URLSearchParams(location.search).get("id");
+const main = document.getElementById("main");
+const srStatus = document.getElementById("sr-status");
+const pageError = document.getElementById("page-error");
+
+let batch = null;            // batch dict (without jobs once events arrive)
+const jobs = new Map();      // job id -> job dict
+const stamps = new Map();    // job id -> performance.now() when received
+const rows = new Map();      // job id -> row refs
+let skeleton = null;         // refs to the top panel
+let doneShown = false;
+let busy = false;
+let badgeKey = "";
+let lastAnnounce = "";
+
+function setBadge(kind, text) {
+  if (badgeKey === kind + text) return;
+  badgeKey = kind + text;
+  renderHeader(document.getElementById("header"), { badge: text, badgeKind: kind });
+}
+setBadge("yellow", "● ON AIR");
+
+function showError(msg) {
+  document.getElementById("page-error-msg").textContent = msg;
+  pageError.hidden = false;
+  main.setAttribute("aria-busy", "false");
+}
+document.getElementById("page-retry").addEventListener("click", load);
+
+async function load() {
+  if (!id) { showError("This link has no batch id. Start from the home page."); return; }
+  try {
+    const b = await api(`/api/batches/${encodeURIComponent(id)}`);
+    pageError.hidden = true;
+    batch = b;
+    jobs.clear();
+    (b.jobs || []).forEach((j) => { jobs.set(j.id, j); stamps.set(j.id, performance.now()); });
+    render(true);
+  } catch (err) {
+    if (!batch) showError(err.message);
+  }
+}
+
+const sorted = () => [...jobs.values()].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+function derived() {
+  const list = sorted();
+  const counts = { waiting: 0, running: 0, done: 0, failed: 0, skipped: 0, cancelled: 0 };
+  list.forEach((j) => { if (j.status in counts) counts[j.status] += 1; });
+  const total = list.length;
+  // Prefer the server's counts/progress; fall back to what the job rows say.
+  const c = (batch && batch.counts) || counts;
+  let progress = batch && typeof batch.progress === "number" ? batch.progress : null;
+  if (progress == null) progress = total ? list.reduce((a, j) => a + (["done", "skipped"].includes(j.status) ? 1 : j.progress || 0), 0) / total : 0;
+  const finished = (c.done || 0) + (c.failed || 0) + (c.skipped || 0) + (c.cancelled || 0);
+  const current = list.findIndex((j) => j.status === "running");
+  return { list, total, c, progress, finished, current };
+}
+
+/* ---------- actions ---------- */
+async function act(path, method, label, after) {
+  if (busy) return;
+  busy = true;
+  document.querySelectorAll("button[data-act]").forEach((b) => { b.disabled = true; });
+  try {
+    const r = await api(path, { method });
+    if (after) after(r);
+  } catch (err) {
+    toast(`${label}: ${err.message}`, "error");
+  } finally {
+    busy = false;
+    document.querySelectorAll("button[data-act]").forEach((b) => { b.disabled = false; });
+  }
+}
+const takeJob = (j) => { if (j && j.id) { jobs.set(j.id, j); stamps.set(j.id, performance.now()); flush(); } };
+const takeBatch = (b) => { if (b && b.id) { batch = { ...(batch || {}), ...b, jobs: undefined }; flush(); } };
+const cancelJob = (j) => act(`/api/jobs/${encodeURIComponent(j.id)}/cancel`, "POST", "Couldn't cancel", takeJob);
+const retryJob = (j) => act(`/api/jobs/${encodeURIComponent(j.id)}/retry`, "POST", "Couldn't retry", takeJob);
+const removeJob = (j) => act(`/api/jobs/${encodeURIComponent(j.id)}`, "DELETE", "Couldn't remove", () => { jobs.delete(j.id); load(); });
+const pauseBatch = () => act(`/api/batches/${encodeURIComponent(id)}/pause`, "POST", "Couldn't pause", (b) => { takeBatch(b); });
+const resumeBatch = () => act(`/api/batches/${encodeURIComponent(id)}/resume`, "POST", "Couldn't resume", (b) => { takeBatch(b); });
+
+function btn(text, cls, onClick) {
+  return el("button", { type: "button", class: `btn ${cls}`, "data-act": "1", onClick, text });
+}
+
+/* ---------- build ---------- */
+function build() {
+  const nameEl = el("h1", { class: "display display--md run-name", id: "page-title" });
+  const subEl = el("p", { class: "run-stage" });
+  const pctEl = el("div", { class: "bigpct", "aria-hidden": "true", text: "0%" });
+  const bar = el("div", { class: "progress__bar" });
+  const progress = el("div", { class: "progress", role: "progressbar", "aria-label": "Overall batch progress", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, bar);
+  const metaL = el("span");
+  const metaR = el("span");
+  const chips = el("div", { class: "row" });
+  const actions = el("div", { class: "run-actions" });
+  const mascotEl = el("span", { class: "mascot mascot--sm" });
+  mascotEl.innerHTML = mascot("concentrating");
+  const sfx = el("span", { class: "sfx sfx--tr", lang: "ja", "aria-hidden": "true", text: "ゴゴゴ" });
+  const panel = el(
+    "section",
+    { class: "panel panel--burst-calm panel--shadow panel--pad-lg", "aria-labelledby": "page-title" },
+    sfx,
+    el(
+      "div",
+      { class: "run-top" },
+      el("div", { class: "run-top__main" }, el("span", { class: "tag", text: "BATCH" }), nameEl, subEl, chips),
+      el("div", { class: "run-side" }, pctEl, mascotEl),
+    ),
+    el("div", { class: "stack mt-m" }, progress, el("div", { class: "progress-meta" }, metaL, metaR), actions),
+  );
+  const summarySlot = el("div");
+  const list = el("ol", { class: "queue", "aria-label": "Episodes" });
+  main.replaceChildren(panel, summarySlot, el("section", { class: "stack", "aria-labelledby": "queue-title" }, el("h2", { class: "panel-title", id: "queue-title", text: "THE QUEUE" }), list));
+  skeleton = { panel, nameEl, subEl, pctEl, bar, progress, metaL, metaR, chips, actions, mascotEl, sfx, summarySlot, list, actionKey: "", mood: "concentrating" };
+  rows.clear();
+  doneShown = false;
+}
+
+function buildRow(j) {
+  const num = el("span", { class: "queue-row__num", "aria-hidden": "true" });
+  const title = el("a", { class: "queue-row__title", href: `/job?id=${encodeURIComponent(j.id)}` });
+  const note = el("span", { class: "queue-row__note" });
+  const chipSlot = el("span");
+  const barEl = el("div", { class: "progress__bar" });
+  const prog = el("div", { class: "progress progress--sm", role: "progressbar", "aria-label": "Progress", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, barEl);
+  const barText = el("span");
+  const actions = el("div", { class: "queue-row__actions" });
+  const node = el(
+    "li",
+    { class: "queue-row" },
+    num,
+    el("div", { class: "queue-row__name" }, title, note, el("span", null, chipSlot)),
+    el("div", { class: "queue-row__bar" }, prog, barText),
+    actions,
+  );
+  return { node, num, title, note, chipSlot, barEl, prog, barText, actions, status: "", actionKey: "" };
+}
+
+/* ---------- patch ---------- */
+function patchRow(r, j, index) {
+  r.num.textContent = String(index + 1).padStart(2, "0");
+  if (r.title.textContent !== (j.name || "Episode")) r.title.textContent = j.name || "Episode";
+  if (r.status !== j.status) {
+    r.status = j.status;
+    r.chipSlot.replaceChildren(statusChip(j.status));
+    r.node.classList.toggle("queue-row--running", j.status === "running");
+  }
+  const p = ["done", "skipped"].includes(j.status) ? 100 : j.status === "waiting" ? 0 : pct(j.progress);
+  r.barEl.style.setProperty("--value", `${p}%`);
+  r.prog.setAttribute("aria-valuenow", String(p));
+  r.prog.classList.toggle("progress--idle", j.status === "waiting" || j.status === "cancelled");
+  r.barText.textContent = j.status === "waiting" ? "—" : `${p}%`;
+  let note = "";
+  let isErr = false;
+  if (j.status === "running") note = stageMeta(j) || "Starting up…";
+  else if (j.status === "failed") { note = j.error || "Failed."; isErr = true; }
+  else if (j.status === "skipped") note = "Already dubbed, left as is.";
+  else if (j.status === "done") note = j.result && j.result.voiced != null ? `${j.result.voiced} lines voiced${j.elapsed_s != null ? ` in ${fmtDuration(j.elapsed_s, { words: true })}` : ""}` : "";
+  else if (j.status === "cancelled") note = "Cancelled, nothing was kept.";
+  else note = "Waiting for its turn.";
+  if (r.note.textContent !== note) r.note.textContent = note;
+  r.note.classList.toggle("queue-row__note--error", isErr);
+  const key = `${j.status}|${Boolean(j.output)}`;
+  if (r.actionKey !== key) {
+    r.actionKey = key;
+    const a = [];
+    if (j.status === "waiting") a.push(btn("Remove", "btn--small btn--secondary", () => removeJob(j)));
+    if (j.status === "waiting" || j.status === "running") a.push(btn("Cancel", "btn--small btn--danger", () => cancelJob(j)));
+    if (j.status === "failed" || j.status === "cancelled") a.push(btn("Retry", "btn--small btn--primary", () => retryJob(j)));
+    if ((j.status === "done" || j.status === "skipped") && j.output) {
+      a.push(btn("▶ Play", "btn--small btn--secondary", () => openPath(j.output, "play")));
+      a.push(btn("Open folder", "btn--small btn--secondary", () => openPath(j.output, "reveal")));
+    }
+    r.actions.replaceChildren(...a);
+  }
+}
+
+function reconcileRows(list) {
+  const ids = new Set(list.map((j) => j.id));
+  for (const [rid, r] of rows) if (!ids.has(rid)) { r.node.remove(); rows.delete(rid); }
+  list.forEach((j, i) => {
+    let r = rows.get(j.id);
+    if (!r) { r = buildRow(j); rows.set(j.id, r); }
+    // Keep DOM order equal to queue order without rebuilding nodes.
+    if (skeleton.list.children[i] !== r.node) skeleton.list.insertBefore(r.node, skeleton.list.children[i] || null);
+    patchRow(r, j, i);
+  });
+}
+
+function renderSummary(d) {
+  const { c } = d;
+  const doneJobs = d.list.filter((j) => j.status === "done" || j.status === "skipped");
+  // Only a dub path: /api/open accepts files from jobs, not the batch folder.
+  const firstOut = doneJobs.map((j) => j.output).find(Boolean) || null;
+  const m = el("span", { class: "mascot" });
+  m.innerHTML = mascot(c.failed ? "normal" : "celebrating");
+  const stat = (n, label) => el("li", { class: "run-stat" }, el("b", { text: String(n) }), el("span", { text: label }));
+  const stats = [stat(c.done || 0, "dubbed")];
+  if (c.skipped) stats.push(stat(c.skipped, "already dubbed"));
+  if (c.failed) stats.push(stat(c.failed, "failed"));
+  if (c.cancelled) stats.push(stat(c.cancelled, "cancelled"));
+  const zipName = (batch && batch.series_name) || "senpai-dub";
+  skeleton.summarySlot.replaceChildren(
+    el(
+      "section",
+      { class: `panel panel--shadow panel--pad-lg ${c.failed ? "panel--yellow" : "panel--burst-accent"}`, "aria-labelledby": "summary-title" },
+      el(
+        "div",
+        { class: "run-top" },
+        el(
+          "div",
+          { class: "run-top__main" },
+          el("span", { class: "tag tag--yellow", text: "BATCH FINISHED" }),
+          el("h2", { class: "display display--lg", id: "summary-title", text: c.failed ? "MOSTLY DUBBED" : "ALL DUBBED!" }),
+          c.failed ? el("p", { class: "bold", text: "Some episodes failed. Retry them from the list below." }) : null,
+          batch && batch.output_dir ? el("p", { class: "small mono run-name", text: batch.output_dir }) : null,
+        ),
+        el("div", { class: "run-side" }, m),
+      ),
+      el("ul", { class: "run-stats mt-m", "aria-label": "Results" }, stats),
+      el(
+        "div",
+        { class: "run-actions mt-m" },
+        c.done ? el("a", { class: "btn btn--ink", href: `/api/batches/${encodeURIComponent(id)}/zip`, download: `${zipName}.zip`, text: "Download as zip" }) : null,
+        firstOut ? btn("Open folder", "btn--secondary", () => openPath(firstOut, "reveal")) : null,
+        el("a", { class: "btn btn--secondary", href: "/", text: "New dub →" }),
+      ),
+    ),
+  );
+  doneShown = true;
+}
+
+function render(force = false) {
+  if (!batch) return;
+  main.setAttribute("aria-busy", "false");
+  if (!skeleton || force && !skeleton.panel.isConnected) build();
+  if (!skeleton) build();
+  const d = derived();
+  const status = batch.status;
+  const finished = status === "done" || (d.total > 0 && d.finished === d.total && (d.c.running || 0) === 0 && (d.c.waiting || 0) === 0);
+  const p = finished ? 100 : pct(d.progress);
+  const name = batch.series_name || "Dubbing batch";
+
+  skeleton.nameEl.textContent = name;
+  skeleton.pctEl.textContent = `${p}%`;
+  skeleton.bar.style.setProperty("--value", `${p}%`);
+  skeleton.progress.setAttribute("aria-valuenow", String(p));
+  skeleton.progress.classList.toggle("progress--paused", status === "paused");
+  skeleton.progress.classList.toggle("progress--idle", finished);
+
+  const cur = d.current >= 0 ? d.current + 1 : Math.min(d.finished + 1, d.total);
+  skeleton.subEl.textContent = finished
+    ? `${d.c.done || 0} of ${d.total} episodes dubbed`
+    : status === "paused"
+      ? `Paused. The running episode will finish, then it waits. ${d.finished} of ${d.total} done.`
+      : `Episode ${cur} of ${d.total} · ${d.finished} finished`;
+
+  const chips = [];
+  const addChip = (n, text, cls) => { if (n) chips.push(el("span", { class: `chip ${cls}`, text: `${n} ${text}` })); };
+  addChip(d.c.running, "running", "chip--accent");
+  addChip(d.c.waiting, "waiting", "chip--outline");
+  addChip(d.c.done, "done", "chip--ok");
+  addChip(d.c.skipped, "skipped", "chip--yellow");
+  addChip(d.c.failed, "failed", "chip--accent");
+  addChip(d.c.cancelled, "cancelled", "chip--outline");
+  if (batch.tts) chips.push(el("span", { class: "chip chip--ink", text: String(batch.tts).toUpperCase() }));
+  if (batch.parallel > 1) chips.push(el("span", { class: "chip chip--outline", text: `${batch.parallel} at once` }));
+  skeleton.chips.replaceChildren(...chips);
+  tickMeta(d, finished);
+
+  const actionKey = finished ? "none" : status === "paused" ? "resume" : "pause";
+  if (skeleton.actionKey !== actionKey) {
+    skeleton.actionKey = actionKey;
+    skeleton.actions.replaceChildren(
+      ...(actionKey === "pause" ? [btn("Pause queue", "btn--secondary", pauseBatch)] : actionKey === "resume" ? [btn("Resume queue", "btn--primary", resumeBatch)] : []),
+    );
+  }
+
+  const mood = finished ? "celebrating" : "concentrating";
+  if (skeleton.mood !== mood) { skeleton.mood = mood; skeleton.mascotEl.innerHTML = mascot(mood); }
+  skeleton.sfx.hidden = finished;
+
+  reconcileRows(d.list);
+
+  if (finished) {
+    renderSummary(d); // rebuilt each time: cheap, and keeps counts right after a retry/remove
+  } else if (doneShown) {
+    skeleton.summarySlot.replaceChildren();
+    doneShown = false;
+  }
+
+  // Tab title and header badge.
+  if (finished) {
+    setTitle(d.c.failed ? "✗ Done with failures" : "✓ Done");
+    setBadge(d.c.failed ? "live" : "ink", d.c.failed ? "✗ SOME FAILED" : "✓ FINISHED");
+  } else if (status === "paused") {
+    setTitle(`Paused · Ep ${cur}/${d.total}`);
+    setBadge("ink", "PAUSED");
+  } else {
+    const cj = d.current >= 0 ? d.list[d.current] : null;
+    setTitle(`Ep ${cur}/${d.total} · ${cj ? pct(cj.progress) : p}%`);
+    setBadge("live", "● RECORDING");
+  }
+  const msg = finished ? "Batch finished." : `Episode ${cur} of ${d.total}, ${Math.floor(p / 10) * 10} percent overall`;
+  if (msg !== lastAnnounce) { lastAnnounce = msg; srStatus.textContent = msg; }
+}
+
+function tickMeta(d = derived(), finished = false) {
+  if (!skeleton) return;
+  const list = d.list;
+  const started = list.map((j) => j.started_at).filter(Boolean);
+  const ended = list.map((j) => j.finished_at).filter(Boolean);
+  const run = list.find((j) => j.status === "running");
+  let elapsed = null;
+  if (started.length) {
+    const t0 = Math.min(...started);
+    if (finished && ended.length) elapsed = Math.max(...ended) - t0;
+    else if (run && run.elapsed_s != null) elapsed = (run.started_at ? run.started_at - t0 : 0) + run.elapsed_s + (performance.now() - (stamps.get(run.id) || performance.now())) / 1000;
+  }
+  skeleton.metaL.textContent = elapsed == null ? "" : `Elapsed ${fmtDuration(elapsed)}`;
+  // Rough batch ETA: current job's ETA plus an average of finished jobs for each one still waiting.
+  let eta = null;
+  if (!finished && run && run.eta_s != null) {
+    const fin = list.filter((j) => j.status === "done" && j.elapsed_s);
+    const avg = fin.length ? fin.reduce((a, j) => a + j.elapsed_s, 0) / fin.length : run.elapsed_s != null && run.progress > 0.05 ? run.elapsed_s / run.progress : null;
+    const left = Math.max(0, run.eta_s - (performance.now() - (stamps.get(run.id) || performance.now())) / 1000);
+    const waiting = (d.c.waiting || 0);
+    eta = left + (avg != null ? (avg * waiting) / Math.max(1, batch.parallel || 1) : 0);
+    if (avg == null && waiting) eta = null;
+  }
+  skeleton.metaR.textContent = finished ? "" : eta == null ? "About — left" : `About ${fmtDuration(eta, { words: true })} left`;
+}
+setInterval(() => { if (batch) tickMeta(derived(), batch.status === "done"); }, 1000);
+
+/* ---------- live ---------- */
+const flush = coalesce(() => render(), 250);
+events(
+  (j) => {
+    if (!j || j.batch_id !== id) return;
+    const prev = jobs.get(j.id);
+    jobs.set(j.id, j);
+    stamps.set(j.id, performance.now());
+    flush(j);
+    if (!prev || prev.status !== j.status) flush.flush();
+  },
+  (b) => {
+    if (!b || b.id !== id) return;
+    batch = { ...(batch || {}), ...b, jobs: undefined };
+    flush();
+  },
+  { onStatus: (s) => { if (s === "open" && batch) load(); } },
+);
+load();
+</script>
+</body>
+</html>

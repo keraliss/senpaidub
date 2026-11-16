@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_cache_dir, user_config_dir
+from platformdirs import user_cache_dir, user_config_dir, user_data_dir
 
 from .errors import UsageError
 
@@ -38,7 +38,7 @@ KNOWN_KEYS: dict[str, type | tuple[type, ...]] = {
 }
 
 DEFAULTS: dict[str, Any] = {
-    "tts": "turbo",
+    "tts": "qwen",
     "voice": None,  # backend's own default
     "voice_map": None,
     "separate": True,
@@ -66,6 +66,12 @@ def cache_dir() -> Path:
     return Path(env) if env else Path(user_cache_dir(APP))
 
 
+def data_dir() -> Path:
+    """Persistent app data (web UI database, local qwen voice environment)."""
+    env = os.environ.get("SENPAIDUB_DATA")
+    return Path(env) if env else Path(user_data_dir(APP))
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     path = path or config_path()
     if not path.is_file():
@@ -91,3 +97,22 @@ def resolve(cli: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     out.update({k: v for k, v in config.items() if v is not None and v != ""})
     out.update({k: v for k, v in cli.items() if v is not None})
     return out
+
+
+def validate_config(cfg: dict[str, Any]) -> None:
+    """Check resolved option values before any work starts (shared by the CLI and the web worker)."""
+    from .mix import CODECS  # lazy: mix pulls in numpy/soundfile
+
+    if cfg["tts"] == "turbo":
+        raise UsageError("The 'turbo' voices were replaced by 'qwen' (better voices, faster on a GPU). "
+                         "Use --tts qwen, or set tts = \"qwen\" in config.toml.")
+    if cfg["tts"] not in ("qwen", "edge", "google", "mock"):
+        raise UsageError(f"--tts must be qwen, edge or google (got {cfg['tts']!r}).")
+    if cfg["codec"] not in CODECS:
+        raise UsageError(f"--codec must be one of {', '.join(CODECS)} (got {cfg['codec']!r}).")
+    if cfg["device"] not in ("auto", "cpu", "cuda", "mps"):
+        raise UsageError(f"--device must be auto, cpu, cuda or mps (got {cfg['device']!r}).")
+    if float(cfg["max_speedup"]) < 1.0:
+        raise UsageError("--max-speedup must be at least 1.0.")
+    if int(cfg["concurrency"]) < 1:
+        raise UsageError("--concurrency must be at least 1.")

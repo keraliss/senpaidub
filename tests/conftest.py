@@ -20,6 +20,7 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     base = tmp_path_factory.mktemp("appdirs")
     monkeypatch.setenv("SENPAIDUB_CACHE", str(base / "cache"))
     monkeypatch.setenv("SENPAIDUB_CONFIG", str(base / "config.toml"))
+    monkeypatch.setenv("SENPAIDUB_DATA", str(base / "data"))
     return base
 
 
