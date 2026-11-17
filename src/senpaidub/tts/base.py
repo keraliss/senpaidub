@@ -147,7 +147,7 @@ async def synthesize_all(
     return list(paths), stats
 
 
-def make_backend(name: str) -> TTSBackend:
+def make_backend(name: str, qwen_mode: str | None = None) -> TTSBackend:
     name = name.lower()
     if name == "edge":
         from .edge import EdgeTTS
@@ -160,7 +160,7 @@ def make_backend(name: str) -> TTSBackend:
     if name == "qwen":
         from .qwen import QwenTTS
 
-        return QwenTTS()
+        return QwenTTS(mode=qwen_mode)
     if name == "mock":
         from .mock import MockTTS
 

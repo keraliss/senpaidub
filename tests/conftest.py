@@ -21,6 +21,7 @@ def isolated_dirs(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("SENPAIDUB_CACHE", str(base / "cache"))
     monkeypatch.setenv("SENPAIDUB_CONFIG", str(base / "config.toml"))
     monkeypatch.setenv("SENPAIDUB_DATA", str(base / "data"))
+    monkeypatch.setenv("SENPAIDUB_PAUSE_FOR_VIDEO", "0")  # a video playing on this Mac must not stall tests
     return base
 
 

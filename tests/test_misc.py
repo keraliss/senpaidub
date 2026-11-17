@@ -275,3 +275,14 @@ def test_config_turbo_points_to_qwen(tmp_path):
     with pytest.raises(UsageError, match="replaced by 'qwen'"):
         validate_config(resolve({"tts": None}, load_config(p)))
     assert DEFAULTS["tts"] == "qwen"
+
+
+def test_qwen_mode_defaults_to_gentle_and_is_checked(tmp_path):
+    from senpaidub.config import validate_config
+
+    assert DEFAULTS["qwen_mode"] == "gentle"
+    p = tmp_path / "config.toml"
+    p.write_text('qwen_mode = "turbo"\n')
+    with pytest.raises(UsageError, match="qwen_mode"):
+        validate_config(resolve({}, load_config(p)))
+    validate_config(resolve({"qwen_mode": "fast"}, {}))

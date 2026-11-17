@@ -239,3 +239,28 @@ def test_chapter_spans():
         {"start_time": "0.0", "end_time": "1.0", "tags": {"title": "Edward's scene"}},
     ]
     assert chapter_song_spans(chapters) == [(0, 90_000), (1_300_000, 1_390_000)]
+
+
+def test_intro_and_outro_chapters_are_dialogue():
+    # Gushing over Magical Girls labels its 2-minute cold open "Intro".
+    chapters = [
+        {"start_time": "0.0", "end_time": "138.0", "tags": {"title": "Intro"}},
+        {"start_time": "138.0", "end_time": "228.0", "tags": {"title": "OP"}},
+        {"start_time": "1400.0", "end_time": "1420.0", "tags": {"title": "Outro"}},
+    ]
+    assert chapter_song_spans(chapters) == [(138_000, 228_000)]
+
+
+def test_karaoke_syllables_dont_outvote_dialogue():
+    # One event per karaoke syllable: far more events than dialogue lines, but only ~90 s on
+    # screen. The dialogue must still count as the main style, so it's never taken for a song.
+    subs = pysubs2.SSAFile()
+    for i in range(30):  # cold open: 30 dialogue lines over ~100 s
+        subs.events.append(pysubs2.SSAEvent(start=i * 3500, end=i * 3500 + 3000, text=f"Line {i}.", style="Dialogue"))
+    for i in range(3000):  # karaoke ED near the end, layered syllables
+        t = 1_300_000 + (i % 300) * 300
+        subs.events.append(pysubs2.SSAEvent(start=t, end=t + 300, text="la", style="EDR"))
+    subs.events.append(pysubs2.SSAEvent(start=1_400_000, end=1_420_000, text="The end.", style="Dialogue"))
+    assert all(a >= 1_000_000 for a, _ in song_spans(subs))
+    kept = filter_dialogue(subs, exclude_styles="EDR").lines
+    assert sum(1 for line in kept if line.text.startswith("Line")) == 30

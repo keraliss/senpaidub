@@ -37,7 +37,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -e .
 
 | Engine | Pick it when | Time per 24-min episode | Notes |
 |---|---|---|---|
-| `qwen` (default) | the user wants the best result and has a GPU (Apple Silicon or NVIDIA) | ~10 min on an Apple M5 GPU (measured, 399 lines); ~6 GB memory | Clones each original voice; local; no API key. Without a GPU it's several times slower: prefer edge |
+| `qwen` (default) | the user wants the best result and has a GPU (Apple Silicon or NVIDIA) | default gentle mode keeps the computer usable, roughly 20 min (not yet measured); `--fast` ~10 min on an Apple M5 GPU (measured, 399 lines) but the machine lags | Clones each original voice; local; no API key. Without a GPU it's several times slower: prefer edge |
 | `edge` | the user wants it fast, has no GPU, or qwen isn't installed | ~3–5 min | Free online Microsoft voices; male/female picked by pitch; needs internet |
 | `google` | the user has a Google Cloud API key | ~3–5 min | Chirp 3 HD voices; key in `GOOGLE_API_KEY` or a `google-api-key` file next to config.toml |
 
@@ -52,6 +52,7 @@ senpaidub ep.mkv --series-name "Show Name"               # file into ~/Downloads
 senpaidub ep.mkv --sub-track 3                           # a specific subtitle stream from --list-tracks
 senpaidub ep.mkv --sub-file ep01.ass                     # external subtitles
 senpaidub ep.mkv --tts edge                              # fast voices
+senpaidub ep.mkv --fast                                  # qwen at full speed; only when nobody is using the computer
 senpaidub ep.mkv --force                                 # redo even if the output exists
 senpaidub serve                                          # local web UI on 127.0.0.1:7860 (the user drives it; `senpaidub setup qwen` installs qwen)
 ```
@@ -62,7 +63,7 @@ senpaidub serve                                          # local web UI on 127.0
 for f in "/path/to/Show"/*.mkv; do senpaidub "$f" --series-name "Show" || echo "FAILED: $f"; done
 ```
 
-**Long runs** (qwen takes about 2–2.5 hours per season on an Apple Silicon GPU): run in the background and log to a file. Lower the priority so the machine stays usable. On macOS, keep it awake and remind the user to stay on the charger with the lid open:
+**Long runs** (qwen in its default gentle mode takes roughly 4 hours per season on an Apple Silicon GPU, or 2–2.5 hours with `--fast`): run in the background and log to a file. Lower the priority so the machine stays usable. On macOS, keep it awake and remind the user to stay on the charger with the lid open:
 
 ```bash
 caffeinate -is nice -n 10 zsh -c 'for f in ...; do senpaidub "$f" --series-name "Show"; done' > dub.log 2>&1

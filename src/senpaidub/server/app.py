@@ -35,7 +35,7 @@ PAGES = {"/": "index.html", "/setup": "setup.html", "/job": "job.html", "/batch"
          "/settings": "settings.html"}  # fmt: skip
 PING_SECONDS = 15.0
 ENGINES = ("qwen", "edge", "google")
-SETTINGS_KEYS = ("tts", "library", "keep_cache", "duck_db", "max_speedup")
+SETTINGS_KEYS = ("tts", "library", "keep_cache", "qwen_mode", "duck_db", "max_speedup")
 
 
 class ApiError(Exception):
@@ -101,6 +101,7 @@ def _settings_view(library: Path | None = None) -> dict:
         "tts": cfg["tts"] if cfg["tts"] in ENGINES else DEFAULTS["tts"],
         "library": str(library if library is not None else Path(cfg["library"]).expanduser()),
         "keep_cache": bool(cfg["keep_cache"]),
+        "qwen_mode": cfg["qwen_mode"] if cfg["qwen_mode"] in ("gentle", "fast") else DEFAULTS["qwen_mode"],
         "duck_db": float(cfg["duck_db"]),
         "max_speedup": float(cfg["max_speedup"]),
         "google_key_set": bool(key),
@@ -137,6 +138,10 @@ def _validated_settings(body: dict) -> dict:
         if not isinstance(body["keep_cache"], bool):
             raise ApiError("keep_cache must be true or false.")
         out["keep_cache"] = body["keep_cache"]
+    if "qwen_mode" in body:
+        if body["qwen_mode"] not in ("gentle", "fast"):
+            raise ApiError("qwen_mode must be gentle or fast.")
+        out["qwen_mode"] = body["qwen_mode"]
     if "duck_db" in body:
         out["duck_db"] = _num(body, "duck_db", -40, 0)
     if "max_speedup" in body:

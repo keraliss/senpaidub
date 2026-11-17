@@ -17,7 +17,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from . import ffmpeg, hardsubs, levels, mix, mux, separate, subtitles, timing
+from . import ffmpeg, hardsubs, levels, mix, mux, playback, separate, subtitles, timing
 from .config import cache_dir
 from .download import audio_content_key, download, name_from_url, probe_url
 from .errors import ExternalToolError, NoSubtitlesError, UsageError
@@ -53,6 +53,7 @@ class Options:
     codec: str = "aac"
     device: str = "auto"
     concurrency: int = 4
+    qwen_mode: str = "gentle"  # gentle keeps the computer usable; fast is full speed
     speech_only: bool = False
     speech_gain_db: float = 0.0
     skip_songs: bool = True
@@ -284,7 +285,7 @@ def _process(
     filtered, source, ocr_file = load_dialogue(video, info, opts, work, cache_key, console, reporter)
     lines = filtered.lines
 
-    backend = make_backend(opts.tts)
+    backend = make_backend(opts.tts, qwen_mode=opts.qwen_mode)
     voices = VoiceMap.load(opts.voice_map, opts.voice or backend.default_voice)
     if opts.voice:  # an explicit --voice beats the map file's `default`
         voices.default = opts.voice
@@ -449,6 +450,8 @@ def _separated_background(
 
         def prog(done: float, total: float) -> None:
             st.update(completed=done, total=total)
+            if opts.qwen_mode == "gentle":  # Demucs saturates the GPU too; let a video play smoothly
+                playback.wait_while_video_plays()
 
         stems = separate.separate_stems(src, work / "no_vocals_44k.wav", work / "vocals_44k.wav",
                                         device=opts.device, on_progress=prog)  # fmt: skip

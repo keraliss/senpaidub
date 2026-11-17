@@ -35,6 +35,7 @@ KNOWN_KEYS: dict[str, type | tuple[type, ...]] = {
     "speech_gain": (int, float),
     "library": str,
     "keep_cache": bool,
+    "qwen_mode": str,
 }
 
 DEFAULTS: dict[str, Any] = {
@@ -53,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
     "speech_gain": 0.0,
     "library": "~/Downloads/anime",  # where series folders go
     "keep_cache": False,  # True keeps per-episode caches (faster re-runs, uses disk)
+    "qwen_mode": "gentle",  # gentle keeps the computer usable; fast is full speed
 }
 
 
@@ -108,6 +110,8 @@ def validate_config(cfg: dict[str, Any]) -> None:
                          "Use --tts qwen, or set tts = \"qwen\" in config.toml.")
     if cfg["tts"] not in ("qwen", "edge", "google", "mock"):
         raise UsageError(f"--tts must be qwen, edge or google (got {cfg['tts']!r}).")
+    if cfg["qwen_mode"] not in ("gentle", "fast"):
+        raise UsageError(f"qwen_mode must be gentle or fast (got {cfg['qwen_mode']!r}).")
     if cfg["codec"] not in CODECS:
         raise UsageError(f"--codec must be one of {', '.join(CODECS)} (got {cfg['codec']!r}).")
     if cfg["device"] not in ("auto", "cpu", "cuda", "mps"):

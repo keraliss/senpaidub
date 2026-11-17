@@ -213,6 +213,9 @@ def test_settings_round_trip(client, library):
         ("edge", str(new_lib), True, -18.0, 1.6)  # fmt: skip
     text = config_path().read_text()
     assert 'tts = "edge"' in text and "separate = false" in text  # other keys kept
+    assert s["qwen_mode"] == "gentle"
+    r = client.put("/api/settings", json={"qwen_mode": "fast"})
+    assert r.json()["qwen_mode"] == "fast" and 'qwen_mode = "fast"' in config_path().read_text()
 
     r = client.put("/api/settings", json={"google_api_key": "  AIzaSyFAKEKEYabcd  "})
     assert r.json()["google_key_set"] is True
@@ -227,7 +230,7 @@ def test_settings_round_trip(client, library):
 
 
 @pytest.mark.parametrize("body", [{"tts": "mock"}, {"duck_db": 5}, {"max_speedup": 0.5}, {"keep_cache": "yes"},
-                                  {"library": ""}, {"library": "relative/path"}, {"colour": "red"}])  # fmt: skip
+                                  {"qwen_mode": "turbo"}, {"library": ""}, {"library": "relative/path"}, {"colour": "red"}])  # fmt: skip
 def test_settings_validation(client, body):
     r = client.put("/api/settings", json=body)
     assert r.status_code == 400

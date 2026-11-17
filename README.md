@@ -42,7 +42,7 @@ Dub an episode:
 senpaidub "Episode 01.mkv"
 ```
 
-The first run downloads the Demucs model. Qwen runs on the GPU (Apple Silicon or NVIDIA) and voices several lines at once: about 10 minutes per 24-minute episode on an M5 MacBook Air (measured), using ~6 GB of memory for the model. Without a GPU it is several times slower, so use `edge` there.
+The first run downloads the Demucs model. Qwen runs on the GPU (Apple Silicon or NVIDIA) and voices several lines at once: about 10 minutes per 24-minute episode on an M5 MacBook Air with `--fast` (measured). By default it runs in a gentle mode that keeps the computer usable meanwhile: smaller batches, short pauses, and a model restart if its memory grows, which takes roughly twice as long. Set `qwen_mode = "fast"` in `config.toml`, or tick the box in the web UI settings, to always run at full speed. Without a GPU it is several times slower, so use `edge` there.
 
 **Fast path (no model download):** skip the setup and use the free Microsoft Edge voices. Male and female voices are picked automatically from the pitch of each original line. This needs an internet connection.
 
@@ -74,7 +74,7 @@ Folder runs skip episodes that already have an output (use `--force` to redo the
 
 | `--tts` | Quality | Speed (one episode) | Cost | Setup |
 |---|---|---|---|---|
-| `qwen` (default) | Best. Clones each original voice | ~10 min on an Apple Silicon GPU (M5); much slower without a GPU | Free, runs locally | `senpaidub setup qwen` (~4.5 GB) |
+| `qwen` (default) | Best. Clones each original voice | ~10 min with `--fast` on an Apple Silicon GPU (M5), about twice that in the default gentle mode; much slower without a GPU | Free, runs locally | `senpaidub setup qwen` (~4.5 GB) |
 | `edge` | Good, generic voices; male/female picked by pitch | Fast | Free (Microsoft Edge online voices) | None, needs internet |
 | `google` | Very natural generic voices (Chirp 3 HD); male/female picked by pitch | Fast | Free tier, then paid (see below) | `pip install -e ".[google]"` + API key |
 

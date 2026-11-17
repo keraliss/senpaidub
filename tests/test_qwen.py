@@ -23,7 +23,7 @@ def backend(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_QWEN_LOG", str(log))
     monkeypatch.setattr(qwen, "WORKER_SCRIPT", FAKE)
     monkeypatch.setattr(qwen, "find_python", lambda: Path(sys.executable))
-    b = qwen.QwenTTS(batch_size=4)
+    b = qwen.QwenTTS(batch_size=4, mode="fast")
     b.log = log  # type: ignore[attr-defined]
     yield b
     b.close()
@@ -90,3 +90,65 @@ def test_prewarm_starts_the_worker(backend, tmp_path):
     sf.write(ref, [0.0] * 2400, 24000)
     asyncio.run(backend.synthesize("hello", "clone", ref))
     assert backend._worker is not None and backend._worker.ready_info["device"] == "fake"
+
+
+def _starts(log: Path) -> list[str]:
+    return Path(str(log) + ".starts").read_text().splitlines()
+
+
+def test_gentle_is_the_default_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(qwen, "find_python", lambda: Path(sys.executable))
+    monkeypatch.delenv("SENPAIDUB_QWEN_MODE", raising=False)
+    monkeypatch.delenv("SENPAIDUB_QWEN_BATCH", raising=False)
+    gentle = qwen.QwenTTS()
+    fast = qwen.QwenTTS(mode="fast")
+    assert gentle.mode == "gentle" and gentle.batch_size < fast.batch_size
+    assert gentle.pause > 0 and gentle.restart_gb is not None and gentle.nice > 0
+    assert fast.pause == 0 and fast.restart_gb is None and fast.nice == 0
+    from senpaidub.errors import UsageError
+
+    with pytest.raises(UsageError):
+        qwen.QwenTTS(mode="turbo")
+
+
+def test_worker_restarts_when_its_memory_creeps_up(backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_QWEN_MEM_GB", "7.0")
+    monkeypatch.setattr(qwen, "MIN_RESTART_INTERVAL_S", 0.0)
+    backend.restart_gb = 5.5
+    ref = tmp_path / "ref.wav"
+    sf.write(ref, [0.0] * 2400, 24000)
+    for text in ("one", "two"):
+        assert asyncio.run(backend.synthesize(text, "clone", ref))
+    backend.close()  # waits for the dispatcher, which checks memory after handing back results
+    assert backend.restarts == 2 and len(_starts(backend.log)) == 2  # the 2nd restart launches nothing
+
+
+def test_no_restart_below_the_limit_or_too_soon(backend, tmp_path, monkeypatch):
+    ref = tmp_path / "ref.wav"
+    sf.write(ref, [0.0] * 2400, 24000)
+    backend.restart_gb = 5.5
+    monkeypatch.setenv("FAKE_QWEN_MEM_GB", "4.0")
+    asyncio.run(backend.synthesize("low", "clone", ref))
+    assert backend.restarts == 0
+    backend.close()
+    monkeypatch.setenv("FAKE_QWEN_MEM_GB", "7.0")  # over the limit, but the worker is brand new
+    asyncio.run(backend.synthesize("young", "clone", ref))
+    assert backend.restarts == 0
+
+
+def test_gentle_pauses_after_each_batch(backend, tmp_path, monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(qwen.time, "sleep", slept.append)
+    backend.pause = 0.5
+    ref = tmp_path / "ref.wav"
+    sf.write(ref, [0.0] * 2400, 24000)
+    asyncio.run(backend.synthesize("hello", "clone", ref))
+    assert len(slept) == 1 and slept[0] >= 0
+
+
+def test_gentle_worker_runs_at_low_cpu_priority(backend, tmp_path):
+    backend.nice = 10
+    ref = tmp_path / "ref.wav"
+    sf.write(ref, [0.0] * 2400, 24000)
+    asyncio.run(backend.synthesize("hello", "clone", ref))
+    assert _starts(backend.log) == ["10"]

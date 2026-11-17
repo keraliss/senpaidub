@@ -37,7 +37,7 @@ UNSORTED = "Unsorted"
 # Option keys a job spec may override (same names as config.toml); anything else is ignored.
 CONFIG_KEYS = (
     "voice", "voice_map", "separate", "duck_db", "max_speedup", "include_styles", "exclude_styles",
-    "set_default", "codec", "device", "concurrency", "speech_gain", "keep_cache",
+    "set_default", "codec", "device", "concurrency", "speech_gain", "keep_cache", "qwen_mode",
 )  # fmt: skip
 
 
@@ -183,6 +183,7 @@ def _plan(spec: dict) -> tuple[Options, bool]:
         codec=cfg["codec"],
         device=cfg["device"],
         concurrency=int(cfg["concurrency"]),
+        qwen_mode=cfg["qwen_mode"],
         speech_gain_db=float(cfg["speech_gain"]),
         series_name=series,
         collect_originals=bool(series),

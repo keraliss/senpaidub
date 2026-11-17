@@ -5,12 +5,14 @@ Protocol, one JSON object per line:
   stdout on start:  {"ready": true, "sr": 24000, "device": "mps", "model": "..."}
   stdin request:    {"id": 1, "items": [{"text": "...", "ref": "/ref.wav", "out": "/out.wav",
                                          "max_s": 6.5}, ...]}
-  stdout response:  {"id": 1, "ok": true, "capped": [false, ...]} | {"id": 1, "ok": false, "error": "..."}
+  stdout response:  {"id": 1, "ok": true, "capped": [false, ...], "mem_gb": 4.6}
+                    | {"id": 1, "ok": false, "error": "..."}
 
 All items of a request are generated as one batch, which keeps the GPU far busier than one line
 at a time. `max_s` caps each line: the model sometimes fails to stop and talks (or hums) until
 its token limit, and a batch only finishes when its slowest line does. `capped` reports lines
-that hit their cap so the caller can retry them.
+that hit their cap so the caller can retry them. `mem_gb` is the GPU memory this process still
+holds after the batch, so the caller can restart the worker when it creeps up.
 """
 
 from __future__ import annotations
@@ -39,7 +41,18 @@ def pick_device(torch) -> str:
     return "cpu"
 
 
+def gpu_memory_gb(torch, device: str) -> float | None:
+    if device == "mps":
+        return torch.mps.driver_allocated_memory() / 2**30
+    if device == "cuda":
+        return torch.cuda.memory_reserved() / 2**30
+    return None
+
+
 def main() -> None:
+    nice = int(os.environ.get("SENPAIDUB_QWEN_NICE", "0"))
+    if nice and hasattr(os, "nice"):
+        os.nice(nice)  # CPU only; the GPU side is handled by the caller's pauses
     # Keep stdout clean for the protocol: libraries print progress bars and notices.
     proto = sys.stdout
     sys.stdout = sys.stderr
@@ -88,6 +101,13 @@ def main() -> None:
             half = len(items) // 2
             return generate(items[:half]) + generate(items[half:])
 
+    def free() -> None:
+        gc.collect()
+        if device == "mps":
+            torch.mps.empty_cache()
+        elif device == "cuda":
+            torch.cuda.empty_cache()
+
     def reply(obj: dict) -> None:
         proto.write(json.dumps(obj) + "\n")
         proto.flush()
@@ -107,16 +127,13 @@ def main() -> None:
                 limit = int(it["max_s"] * sr)
                 capped.append(w.size >= limit - int(0.25 * sr))
                 sf.write(it["out"], w[:limit], sr)
-            reply({"id": req["id"], "ok": True, "capped": capped})
+            del wavs
+            free()
+            reply({"id": req["id"], "ok": True, "capped": capped, "mem_gb": gpu_memory_gb(torch, device)})
         except Exception as e:  # noqa: BLE001 — report every failure to the parent
             traceback.print_exc()
+            free()
             reply({"id": req["id"], "ok": False, "error": f"{type(e).__name__}: {e}"})
-        finally:
-            gc.collect()
-            if device == "mps":
-                torch.mps.empty_cache()
-            elif device == "cuda":
-                torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

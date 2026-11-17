@@ -136,7 +136,19 @@ SONG_MAX_S = 150
 SONG_MIN_LINES = 8
 SONG_MAX_GAP_S = 10  # a gap this long between lyric lines ends the block
 SONG_EDGE_FRACTION = (0.4, 0.75)  # OP starts in the first 40%, ED ends after 75%
-CHAPTER_SONG_RE = re.compile(r"^(?:op|ed|opening|ending|intro|outro|credits|op\d|ed\d)\b", re.IGNORECASE)
+# Not "intro"/"outro": releases use those for the cold open and the after-credits scene, which
+# are dialogue (Gushing over Magical Girls labels its 2-minute cold open "Intro").
+CHAPTER_SONG_RE = re.compile(r"^(?:op|ed|opening|ending|credits|op\d|ed\d)\b", re.IGNORECASE)
+
+
+def _covered_ms(events: list[pysubs2.SSAEvent]) -> int:
+    """Total time on screen, counting overlapping events once."""
+    total, end = 0, -1
+    for e in sorted(events, key=lambda e: e.start):
+        if e.end > end:
+            total += e.end - max(e.start, end)
+            end = e.end
+    return total
 
 
 def song_spans(subs: pysubs2.SSAFile) -> list[tuple[int, int]]:
@@ -151,7 +163,9 @@ def song_spans(subs: pysubs2.SSAFile) -> list[tuple[int, int]]:
     if not events:
         return []
     counts = Counter(e.style for e in events)
-    main_style = counts.most_common(1)[0][0]
+    # The dialogue style is the one on screen the longest, not the one with the most events:
+    # karaoke styles have one event per syllable (22,635 vs 210 dialogue lines in one release).
+    main_style = max(counts, key=lambda st: _covered_ms([e for e in events if e.style == st]))
     total = max(e.end for e in events)
     spans: list[tuple[int, int]] = []
     for style in counts:

@@ -5,6 +5,14 @@ The model runs in a separate Python environment via qwen_worker.py, on the GPU w
 Lines are voiced in batches: the pipeline keeps many lines in flight, and a dispatcher thread
 hands them to the worker `batch_size` at a time. One line at a time left most of the GPU idle;
 batches of 8 keep the worker around 6-7 GB on a 16 GB Mac; 16 was ~25% faster but pushed it past 8 GB and slowed the whole machine.
+
+Two modes (see MODES):
+- gentle (default): keeps the computer usable while it runs. Smaller batches, a pause after each
+  one so the desktop gets the GPU back, and a worker restart when its memory creeps past a
+  limit. On a 16 GB Mac, back-to-back batches of 8 plus the worker slowly growing to ~7.8 GB
+  made the whole machine lag. The one-line-at-a-time turbo engine it replaced never did that,
+  because it left the GPU idle between lines.
+- fast: the full-speed settings, for when nobody is using the computer.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import playback
 from ..errors import ExternalToolError, UsageError
 from ..setup_tts import find_qwen_python, is_installed, qwen_model
 
@@ -37,6 +46,23 @@ Or point SENPAIDUB_QWEN_PYTHON at a Python that has qwen-tts installed."""
 WORKER_SCRIPT = Path(__file__).with_name("qwen_worker.py")
 MIN_REF_S = 5.4  # references shorter than this are padded with the same speaker's other lines
 GATHER_S = 0.05  # how long the dispatcher waits for more lines before sending a short batch
+
+
+@dataclass(frozen=True)
+class Mode:
+    batch_size: int
+    pause: float  # after each batch, sleep this fraction of the time the batch took
+    restart_gb: float | None  # restart the worker between batches once it holds more GPU memory
+    nice: int  # CPU priority of the worker (0 = normal)
+    pause_for_video: bool  # wait while a video plays (playback.py)
+
+
+MODES = {
+    "gentle": Mode(batch_size=4, pause=0.5, restart_gb=5.5, nice=10, pause_for_video=True),
+    "fast": Mode(batch_size=8, pause=0.0, restart_gb=None, nice=0, pause_for_video=False),
+}
+DEFAULT_MODE = "gentle"
+MIN_RESTART_INTERVAL_S = 180.0  # never restart a worker younger than this (a reload costs ~20 s)
 
 
 def cap_seconds(text: str, slot_s: float | None) -> float:
@@ -64,10 +90,11 @@ def find_python() -> Path:
 class _Worker:
     """One model process speaking the JSON-lines protocol of qwen_worker.py."""
 
-    def __init__(self, python: Path) -> None:
+    def __init__(self, python: Path, nice: int = 0) -> None:
         self.ready_info: dict = {}
         self.stderr: list[str] = []
-        env = {**os.environ, "SENPAIDUB_QWEN_MODEL": qwen_model()}
+        self.started = time.monotonic()
+        env = {**os.environ, "SENPAIDUB_QWEN_MODEL": qwen_model(), "SENPAIDUB_QWEN_NICE": str(nice)}
         self.proc = subprocess.Popen(
             # -I: don't put this folder on sys.path (our google.py would shadow the real package)
             [str(python), "-I", "-u", str(WORKER_SCRIPT)],
@@ -142,8 +169,19 @@ class QwenTTS:
     takes_slot = True  # synthesize() accepts slot_s, the room the line has on the timeline
     min_ref_s = MIN_REF_S
 
-    def __init__(self, batch_size: int | None = None) -> None:
-        self.batch_size = max(1, batch_size or int(os.environ.get("SENPAIDUB_QWEN_BATCH", "8")))
+    def __init__(self, batch_size: int | None = None, mode: str | None = None) -> None:
+        mode = mode or os.environ.get("SENPAIDUB_QWEN_MODE") or DEFAULT_MODE
+        if mode not in MODES:
+            raise UsageError(f"qwen mode must be {' or '.join(MODES)} (got {mode!r}).")
+        self.mode = mode
+        m = MODES[mode]
+        env_batch = os.environ.get("SENPAIDUB_QWEN_BATCH")
+        self.batch_size = max(1, batch_size or (int(env_batch) if env_batch else m.batch_size))
+        self.pause = float(os.environ.get("SENPAIDUB_QWEN_PAUSE", m.pause))
+        env_restart = os.environ.get("SENPAIDUB_QWEN_RESTART_GB")
+        self.restart_gb = float(env_restart) if env_restart else m.restart_gb
+        self.nice = m.nice
+        self.pause_for_video = m.pause_for_video
         # Keep a second batch queued so the GPU never waits for the next one to be gathered.
         self.concurrency = self.batch_size * 2
         self._python = find_python()
@@ -155,6 +193,7 @@ class QwenTTS:
         self._lock = threading.Lock()
         self._next_id = 0
         self.batches: list[int] = []  # sizes of the batches sent, for logs and tests
+        self.restarts = 0  # memory-limit restarts, for logs and tests
 
     # ---- worker management
 
@@ -166,7 +205,7 @@ class QwenTTS:
 
     def _launch(self) -> _Worker:
         log.debug("Starting Qwen worker")
-        return _Worker(self._python).wait_ready()
+        return _Worker(self._python, self.nice).wait_ready()
 
     def _current(self) -> _Worker:
         with self._lock:
@@ -231,6 +270,8 @@ class QwenTTS:
     def _run(self, batch: list[_Item]) -> None:
         outs: list[str] = []
         try:
+            if self.pause_for_video:
+                playback.wait_while_video_plays()
             worker = self._current()
             self._next_id += 1
             for _ in batch:
@@ -240,7 +281,9 @@ class QwenTTS:
             items = [{"text": it.text, "ref": str(it.ref), "out": out, "max_s": it.max_s}
                      for it, out in zip(batch, outs)]  # fmt: skip
             self.batches.append(len(batch))
+            started = time.monotonic()
             resp = worker.request({"id": self._next_id, "items": items})
+            took = time.monotonic() - started
             if not resp.get("ok"):
                 raise RuntimeError(resp.get("error", "unknown error"))
             capped = resp.get("capped") or [False] * len(batch)
@@ -253,6 +296,7 @@ class QwenTTS:
                     self._queue.put(it)
                     continue
                 it.future.set_result(Path(out).read_bytes())
+            self._after_batch(worker, resp.get("mem_gb"), took)
         except Exception as e:  # noqa: BLE001 — hand the failure to every line in the batch
             for it in batch:
                 if not it.future.done():
@@ -260,6 +304,21 @@ class QwenTTS:
         finally:
             for out in outs:
                 Path(out).unlink(missing_ok=True)
+
+    def _after_batch(self, worker: _Worker, mem_gb: float | None, took: float) -> None:
+        """Gentle mode: give the computer some room before the next batch."""
+        if (
+            self.restart_gb is not None and mem_gb is not None and mem_gb > self.restart_gb
+            and time.monotonic() - worker.started >= MIN_RESTART_INTERVAL_S
+        ):
+            # GPU memory creeps up across batches (not freed by empty_cache); a fresh process
+            # starts back at the model's ~4 GB. Reloading the model takes ~15-30 s.
+            log.info("qwen: worker holds %.1f GB (limit %.1f GB); restarting it", mem_gb, self.restart_gb)
+            worker.close()
+            self._worker = None
+            self.restarts += 1
+        if self.pause > 0:
+            time.sleep(self.pause * took)
 
     # ---- synthesis
 

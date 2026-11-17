@@ -86,6 +86,14 @@
         </span>
       </label>
 
+      <label class="check">
+        <input type="checkbox" id="qwen_fast" name="qwen_fast">
+        <span class="check__text">
+          <span>Qwen voices at full speed</span>
+          <span class="field__hint">About twice as fast, but the computer lags while it runs. Leave off to keep using it meanwhile.</span>
+        </span>
+      </label>
+
       <details class="disclosure">
         <summary>ADVANCED AUDIO</summary>
         <div class="disclosure__body">
@@ -201,6 +209,7 @@ function fillForm(s) {
   for (const input of form.querySelectorAll('input[name="tts"]')) input.checked = input.value === s.tts;
   $("library").value = s.library || "";
   $("keep_cache").checked = Boolean(s.keep_cache);
+  $("qwen_fast").checked = s.qwen_mode === "fast";
   $("duck_db").value = s.duck_db ?? "";
   $("max_speedup").value = s.max_speedup ?? "";
   $("form-status").textContent = "";
@@ -214,6 +223,7 @@ function readForm() {
     tts: checked ? checked.value : state.settings?.tts,
     library: $("library").value.trim(),
     keep_cache: $("keep_cache").checked,
+    qwen_mode: $("qwen_fast").checked ? "fast" : "gentle",
     duck_db: Number($("duck_db").value),
     max_speedup: Number($("max_speedup").value),
   };
